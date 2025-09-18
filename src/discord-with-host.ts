@@ -8,10 +8,10 @@
  * and the application just defines the business logic.
  */
 
-import { ConnectomeHost } from '../../lightweight-connectome/src/host';
+import { ConnectomeHost } from 'lightweight-connectome/src/host';
 import { DiscordApplication } from './discord-app';
-import { AnthropicProvider } from '../../lightweight-connectome/src/llm/anthropic-provider';
-import { MockLLMProvider } from '../../lightweight-connectome/src/llm/mock-llm-provider';
+import { AnthropicProvider } from 'lightweight-connectome/src/llm/anthropic-provider';
+import { MockLLMProvider } from 'lightweight-connectome/src/llm/mock-llm-provider';
 import { join } from 'path';
 import * as yaml from 'js-yaml';
 import * as fs from 'fs';
@@ -95,6 +95,7 @@ Be friendly, helpful, and engaging!`,
     discord: {
       host: 'localhost:8081',
       guild: guildId,
+      modulePort: 8080,  // The Discord AXON server runs module serving on 8080
       autoJoinChannels: ['1289595876716707914']  // #general channel ID
     }
   });

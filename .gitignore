@@ -29,3 +29,5 @@ Thumbs.db
 *.tmp
 *.swp
 *~
+discord-host-state/snapshots/
+discord-host-state/snapshots/*

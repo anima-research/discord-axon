@@ -15,6 +15,12 @@
     "experimentalDecorators": true,
     "emitDecoratorMetadata": true
   },
+  "ts-node": {
+    "swc": true,
+    "compilerOptions": {
+      "module": "commonjs"
+    }
+  },
   "include": [
     "src/**/*"
   ],

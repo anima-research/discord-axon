@@ -35,6 +35,7 @@ export function loadConfig(): DiscordConfig {
         const configContent = readFileSync(configPath, 'utf8');
         const config = yaml.load(configContent) as any;
         
+        // Try discord.botToken first
         if (config.discord?.botToken) {
           return {
             botToken: config.discord.botToken,
@@ -42,6 +43,17 @@ export function loadConfig(): DiscordConfig {
             wsPort: config.discord.wsPort || 8081,
             modulePort: config.discord.modulePort || 8082,
             debug: config.discord.debug || false
+          };
+        }
+        
+        // Try adapter.bot_token format (legacy)
+        if (config.adapter?.bot_token) {
+          return {
+            botToken: config.adapter.bot_token,
+            httpPort: config.discord?.httpPort || 8080,
+            wsPort: config.discord?.wsPort || 8081,
+            modulePort: config.discord?.modulePort || 8082,
+            debug: config.discord?.debug || false
           };
         }
       } catch (error) {

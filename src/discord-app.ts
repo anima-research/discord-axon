@@ -2,17 +2,17 @@
  * Discord Application for Connectome
  */
 
-import { ConnectomeApplication } from '../../lightweight-connectome/src/host/types';
-import { Space } from '../../lightweight-connectome/src/spaces/space';
-import { VEILStateManager } from '../../lightweight-connectome/src/veil/veil-state';
-import { ComponentRegistry } from '../../lightweight-connectome/src/persistence/component-registry';
-import { BasicAgent } from '../../lightweight-connectome/src/agent/basic-agent';
-import { AgentComponent } from '../../lightweight-connectome/src/agent/agent-component';
-import { persistable, persistent } from '../../lightweight-connectome/src/persistence/decorators';
-import { AxonElement } from '../../lightweight-connectome/src/elements/axon-element';
-import { Element } from '../../lightweight-connectome/src/spaces/element';
-import { Component } from '../../lightweight-connectome/src/spaces/component';
-import { SpaceEvent } from '../../lightweight-connectome/src/spaces/types';
+import { ConnectomeApplication } from 'lightweight-connectome/src/host/types';
+import { Space } from 'lightweight-connectome/src/spaces/space';
+import { VEILStateManager } from 'lightweight-connectome/src/veil/veil-state';
+import { ComponentRegistry } from 'lightweight-connectome/src/persistence/component-registry';
+import { BasicAgent } from 'lightweight-connectome/src/agent/basic-agent';
+import { AgentComponent } from 'lightweight-connectome/src/agent/agent-component';
+import { persistable, persistent } from 'lightweight-connectome/src/persistence/decorators';
+import { AxonElement } from 'lightweight-connectome/src/elements/axon-element';
+import { Element } from 'lightweight-connectome/src/spaces/element';
+import { Component } from 'lightweight-connectome/src/spaces/component';
+import { SpaceEvent } from 'lightweight-connectome/src/spaces/types';
 
 export interface DiscordAppConfig {
   agentName: string;
@@ -21,6 +21,7 @@ export interface DiscordAppConfig {
   discord: {
     host: string;
     guild: string;
+    modulePort?: number;
     autoJoinChannels?: string[];
   };
 }
