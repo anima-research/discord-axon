@@ -1,0 +1,35 @@
+{
+  "name": "@connectome/discord-axon",
+  "version": "1.0.0",
+  "description": "Discord integration server for Connectome, providing both Discord bot connectivity and AXON module serving",
+  "main": "dist/server.js",
+  "scripts": {
+    "start": "npm run build && node dist/server.js",
+    "dev": "tsx server.ts",
+    "build": "tsc",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [
+    "connectome",
+    "discord",
+    "axon",
+    "bot"
+  ],
+  "author": "Connectome Team",
+  "license": "MIT",
+  "dependencies": {
+    "@connectome/axon-server": "file:../axon-server",
+    "discord.js": "^14.16.3",
+    "express": "^4.21.2",
+    "js-yaml": "^4.1.0",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.0",
+    "@types/js-yaml": "^4.0.9",
+    "@types/node": "^22.10.2",
+    "@types/ws": "^8.5.13",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  }
+}
