@@ -43,6 +43,14 @@ A comprehensive Discord integration server for Connectome that combines:
                                 └───────────┘
 ```
 
+## Complete Discord Solution
+
+This repository contains everything needed for Discord integration with Connectome:
+- Discord bot server with WebSocket communication
+- AXON modules for dynamic component loading
+- Example Connectome application (`discord-app.ts`)
+- Host-based example (`discord-with-host.ts`)
+
 ## Quick Start
 
 ### 1. Install Dependencies
