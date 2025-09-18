@@ -11,7 +11,7 @@ import { Client, GatewayIntentBits, TextChannel } from 'discord.js';
 import WebSocket from 'ws';
 import { AxonModuleServer } from '@connectome/axon-server';
 import { join } from 'path';
-import { loadConfig, DiscordConfig } from './src/config';
+import { loadConfig, DiscordConfig } from './config';
 
 interface AxonConnection {
   ws: WebSocket;
@@ -58,7 +58,7 @@ class CombinedDiscordAxonServer {
   }
   
   private async registerDiscordModules(): Promise<void> {
-    const modulesDir = join(__dirname, 'src/modules');
+    const modulesDir = join(__dirname, 'modules');
     
     // Map module names to their actual file names
     await this.moduleServer.addModule('discord', {
@@ -363,35 +363,5 @@ class CombinedDiscordAxonServer {
   }
 }
 
-// Main entry point
-async function main() {
-  try {
-    const config = loadConfig();
-    
-    console.log('🚀 Starting Discord AXON Server...');
-    console.log(`📡 HTTP Port: ${config.httpPort || 8080}`);
-    console.log(`🔌 WebSocket Port: ${config.wsPort || 8081}`);
-    console.log(`📦 Module Port: ${config.modulePort || 8082}`);
-    
-    const server = new CombinedDiscordAxonServer(
-      config.httpPort || 8080,
-      config.wsPort || 8081
-    );
-    
-    await server.init();
-    await server.start(config.botToken);
-  } catch (error) {
-    console.error('❌ Failed to load configuration:', error.message);
-    process.exit(1);
-  }
-}
-
-// Run if executed directly
-if (require.main === module) {
-  main().catch(error => {
-    console.error('Failed to start server:', error);
-    process.exit(1);
-  });
-}
-
 export { CombinedDiscordAxonServer };
+export type { AxonConnection };

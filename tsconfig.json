@@ -16,7 +16,6 @@
     "emitDecoratorMetadata": true
   },
   "include": [
-    "server.ts",
     "src/**/*"
   ],
   "exclude": [

@@ -2,10 +2,13 @@
   "name": "@connectome/discord-axon",
   "version": "1.0.0",
   "description": "Discord integration server for Connectome, providing both Discord bot connectivity and AXON module serving",
-  "main": "dist/server.js",
+  "main": "dist/index.js",
+  "bin": {
+    "discord-axon": "./dist/cli.js"
+  },
   "scripts": {
-    "start": "npm run build && node dist/server.js",
-    "dev": "tsx server.ts",
+    "start": "npm run build && node dist/cli.js",
+    "dev": "tsx src/cli.ts",
     "build": "tsc",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
