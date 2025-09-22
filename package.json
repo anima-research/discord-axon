@@ -12,7 +12,8 @@
     "build": "tsc",
     "test": "echo \"Error: no test specified\" && exit 1",
     "example:host": "ts-node src/discord-with-host.ts",
-    "example:host:reset": "ts-node src/discord-with-host.ts --reset"
+    "example:host:reset": "ts-node src/discord-with-host.ts --reset",
+    "example:host:fresh": "./start-fresh.sh"
   },
   "keywords": [
     "connectome",
