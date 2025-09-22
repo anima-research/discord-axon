@@ -582,11 +582,15 @@ export function createModule(env: IAxonEnvironment): typeof env.InteractiveCompo
       this.addFacet({
         id: `discord-send-${Date.now()}`,
         type: 'action',
-        displayName: 'message-sent',
-        content: `→ ${message}`,
+        displayName: 'discord-send',
+        content: JSON.stringify({ channelId, message }),
         attributes: {
-          channelId,
-          message
+          agentGenerated: false,
+          toolName: 'discord-send',
+          parameters: {
+            channelId,
+            message
+          }
         }
       });
     }
