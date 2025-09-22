@@ -117,7 +117,7 @@ export class DiscordApplication implements ConnectomeApplication {
       `mentions=true&` +
       `directMessages=true&` +
       `keywords=${encodeURIComponent('hi,hello,help,?,connectome')}&` +
-      `cooldown=10`;
+      `cooldown=0`;
     
     // Connect to the AXON component server
     await discordElem.connect(axonUrl);
