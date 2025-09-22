@@ -115,7 +115,7 @@ class CombinedDiscordAxonServer {
   
   private setupRoutes() {
     // Mount the module server routes
-    this.app.use('/modules', this.moduleServer.getRouter());
+    this.app.use('/modules', this.moduleServer.getRouter() as any);
     
     // Health check
     this.app.get('/health', (req, res) => {

@@ -56,7 +56,7 @@ interface CooldownEntry {
 }
 
 // Module factory function that extends the base Discord component
-export function createModule(env: IAxonEnvironment) {
+export function createModule(env: IAxonEnvironment): any {
   const {
     persistent,
     persistable,
@@ -139,7 +139,7 @@ export function createModule(env: IAxonEnvironment) {
       // Handle chat-specific parameters
       if (params.keywords) {
         const keywords = typeof params.keywords === 'string' 
-          ? params.keywords.split(',').map(k => k.trim()).filter(k => k)
+          ? params.keywords.split(',').map((k: string) => k.trim()).filter((k: string) => k)
           : params.keywords;
         this.triggerConfig.keywords = keywords;
         console.log(`[DiscordChat] Parsed keywords:`, keywords);

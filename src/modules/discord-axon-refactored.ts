@@ -57,7 +57,7 @@ interface DiscordMessage {
 }
 
 // Module factory function
-export function createModule(env: IAxonEnvironment) {
+export function createModule(env: IAxonEnvironment): typeof env.InteractiveComponent {
   const {
     InteractiveComponent,
     persistent,
@@ -198,7 +198,7 @@ export function createModule(env: IAxonEnvironment) {
     }
     
     async handleEvent(event: ISpaceEvent): Promise<void> {
-      await super.handleEvent(event);
+      // No super.handleEvent() - IInteractiveComponent doesn't have this method
       
       if (event.topic === 'frame:start') {
         // Process any pending messages
