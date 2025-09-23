@@ -8,11 +8,11 @@
  * and the application just defines the business logic.
  */
 
-import { ConnectomeHost } from 'lightweight-connectome/src/host';
+import { ConnectomeHost } from 'connectome-ts/src/host';
 import { DiscordApplication } from './discord-app';
-import { AnthropicProvider } from 'lightweight-connectome/src/llm/anthropic-provider';
-import { MockLLMProvider } from 'lightweight-connectome/src/llm/mock-llm-provider';
-import { DebugLLMProvider } from 'lightweight-connectome/src/llm/debug-llm-provider';
+import { AnthropicProvider } from 'connectome-ts/src/llm/anthropic-provider';
+import { MockLLMProvider } from 'connectome-ts/src/llm/mock-llm-provider';
+import { DebugLLMProvider } from 'connectome-ts/src/llm/debug-llm-provider';
 import { join } from 'path';
 import * as yaml from 'js-yaml';
 import * as fs from 'fs';
