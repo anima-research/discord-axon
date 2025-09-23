@@ -28,7 +28,7 @@
     "discord.js": "^14.16.3",
     "express": "^4.21.2",
     "js-yaml": "^4.1.0",
-    "lightweight-connectome": "file:../lightweight-connectome",
+    "connectome-ts": "file:../connectome-ts",
     "ws": "^8.18.0"
   },
   "devDependencies": {
