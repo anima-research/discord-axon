@@ -9,7 +9,7 @@ import { ComponentRegistry } from 'connectome-ts/src/persistence/component-regis
 import { BasicAgent } from 'connectome-ts/src/agent/basic-agent';
 import { AgentComponent } from 'connectome-ts/src/agent/agent-component';
 import { persistable, persistent } from 'connectome-ts/src/persistence/decorators';
-import { AxonElement } from 'connectome-ts/src/elements/axon-element';
+import { AxonLoaderComponent } from 'connectome-ts/src/components/axon-loader';
 import { Element } from 'connectome-ts/src/spaces/element';
 import { Component } from 'connectome-ts/src/spaces/component';
 import { SpaceEvent } from 'connectome-ts/src/spaces/types';
@@ -53,8 +53,11 @@ class DiscordAutoJoinComponent extends Component {
   async handleEvent(event: SpaceEvent): Promise<void> {
     console.log('🔔 DiscordAutoJoinComponent received event:', event.topic, 'from:', event.source);
     
-    if (event.topic === 'discord:connected' && !this.hasJoined) {
+    // Always try to join channels on discord:connected, not just the first time
+    // This ensures we rejoin after restoration
+    if (event.topic === 'discord:connected') {
       console.log('🤖 Discord connected! Auto-joining channels:', this.channels);
+      console.log('Previous join state:', this.hasJoined ? 'had joined before' : 'first time joining');
       
       // Find the Discord element and emit join actions to it
       const space = this.element.space;
@@ -77,11 +80,10 @@ class DiscordAutoJoinComponent extends Component {
             timestamp: Date.now()
           });
         }
+        this.hasJoined = true;
       } else {
         console.log('Discord element not found!');
       }
-      
-      this.hasJoined = true;
     }
   }
 }
@@ -102,8 +104,9 @@ export class DiscordApplication implements ConnectomeApplication {
   async initialize(space: Space, veilState: VEILStateManager): Promise<void> {
     console.log('🎮 Initializing Discord application...');
     
-    // Create Discord element using AxonElement to load from server
-    const discordElem = new AxonElement({ id: 'discord' });
+    // Create Discord element with AxonLoaderComponent
+    const discordElem = new Element('discord', 'discord');
+    const axonLoader = new AxonLoaderComponent();
     
     // Build the AXON URL with connection parameters
     // Default to module server port (8082)
@@ -119,11 +122,14 @@ export class DiscordApplication implements ConnectomeApplication {
       `keywords=${encodeURIComponent('hi,hello,help,?,connectome')}&` +
       `cooldown=0`;
     
-    // Connect to the AXON component server
-    await discordElem.connect(axonUrl);
-    
-    // Add Discord element to space
+    // Add Discord element to space first
     space.addChild(discordElem);
+    
+    // Add the component and wait for it to mount
+    await discordElem.addComponentAsync(axonLoader);
+    
+    // Connect to the AXON component server
+    await axonLoader.connect(axonUrl);
     
     // Create agent element
     const agentElem = new Element('discord-agent');
@@ -162,7 +168,7 @@ export class DiscordApplication implements ConnectomeApplication {
     const registry = ComponentRegistry;
     
     // Register all components that can be restored
-    registry.register('AxonElement', AxonElement as any);
+    registry.register('AxonLoaderComponent', AxonLoaderComponent);
     registry.register('AgentComponent', AgentComponent);
     registry.register('DiscordAutoJoinComponent', DiscordAutoJoinComponent);
     
