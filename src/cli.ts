@@ -18,7 +18,8 @@ async function main() {
     
     const server = new CombinedDiscordAxonServer(
       config.httpPort || 8080,
-      config.wsPort || 8081
+      config.wsPort || 8081,
+      config.modulePort || 8082
     );
     
     await server.init();

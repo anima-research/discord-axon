@@ -26,7 +26,6 @@ export function loadConfig(): DiscordConfig {
   const configPaths = [
     join(process.cwd(), 'config.yaml'),
     join(process.cwd(), 'discord_config.yaml'),
-    join(process.cwd(), '../connectome-adapters/config/discord_config.yaml')
   ];
 
   for (const configPath of configPaths) {

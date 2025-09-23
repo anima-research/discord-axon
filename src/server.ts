@@ -27,10 +27,12 @@ class CombinedDiscordAxonServer {
   private discord: Client;
   private connections = new Map<string, AxonConnection>();
   private moduleServer: AxonModuleServer;
+  private hotReloadWss?: WebSocket.Server;
   
   constructor(
     private httpPort: number = 8080,
-    private wsPort: number = 8081
+    private wsPort: number = 8081,
+    private modulePort: number = 8082
   ) {
     // Discord client setup
     this.discord = new Client({
@@ -47,6 +49,7 @@ class CombinedDiscordAxonServer {
     
     // Create module server
     this.moduleServer = new AxonModuleServer({
+      port: this.modulePort,
       hotReload: true,
       corsOrigin: '*'
     });
@@ -343,6 +346,25 @@ class CombinedDiscordAxonServer {
     return Math.random().toString(36).substring(2, 15);
   }
   
+  /**
+   * Notify hot reload clients about module updates
+   */
+  public notifyModuleUpdate(moduleName: string): void {
+    if (!this.hotReloadWss) return;
+    
+    const notification = JSON.stringify({
+      type: 'module-updated',
+      module: moduleName,
+      timestamp: Date.now()
+    });
+    
+    this.hotReloadWss.clients.forEach(client => {
+      if (client.readyState === WebSocket.OPEN) {
+        client.send(notification);
+      }
+    });
+  }
+  
   async init() {
     // Register Discord modules
     await this.registerDiscordModules();
@@ -356,6 +378,19 @@ class CombinedDiscordAxonServer {
       console.log(`   WebSocket server on port ${this.wsPort}`);
       console.log(`   Module server at http://localhost:${this.httpPort}/modules/manifest`);
       console.log(`\n📡 Agents can connect to: ws://localhost:${this.wsPort}/ws`);
+    });
+    
+    // Start hot reload WebSocket server
+    const hotReloadPort = this.modulePort + 1;
+    this.hotReloadWss = new WebSocket.Server({ port: hotReloadPort });
+    console.log(`   Hot reload WebSocket on port ${hotReloadPort}`);
+    
+    this.hotReloadWss.on('connection', (ws) => {
+      console.log('[HotReload] Client connected');
+      
+      ws.on('close', () => {
+        console.log('[HotReload] Client disconnected');
+      });
     });
     
     // Login to Discord

@@ -6,3 +6,4 @@ rm -rf discord-host-state/
 
 echo "🚀 Starting Discord bot..."
 npm run example:host "$@"
+
