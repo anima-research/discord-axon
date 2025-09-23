@@ -32,7 +32,7 @@ async function main() {
   }
   
   // Load Discord config
-  const configPath = join(__dirname, '../../connectome-adapters/config/discord_config.yaml');
+  const configPath = join(__dirname, '../config.yaml');
   const config = yaml.load(fs.readFileSync(configPath, 'utf8')) as any;
   const { bot_token: botToken, application_id: applicationId } = config.adapter;
   const guildId = config.adapter.guild || '1289595876716707911'; // Your test guild
