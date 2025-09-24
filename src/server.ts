@@ -332,8 +332,17 @@ class CombinedDiscordAxonServer {
             throw new Error('Channel not found or not a text channel');
           }
           
-          await channel.send(message);
-          console.log(`[Server] Sent message to ${channel.name}: ${message}`);
+          const sentMessage = await channel.send(message);
+          console.log(`[Server] Sent message to ${channel.name}: ${message} (ID: ${sentMessage.id})`);
+          
+          // Send confirmation back to client with message ID
+          connection.ws.send(JSON.stringify({
+            type: 'message_sent',
+            channelId: channelId,
+            messageId: sentMessage.id,
+            content: message,
+            timestamp: sentMessage.createdAt.toISOString()
+          }));
         } catch (error: any) {
           console.error(`[Server] Failed to send message:`, error);
           connection.ws.send(JSON.stringify({

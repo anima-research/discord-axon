@@ -369,6 +369,10 @@ export function createModule(env: IAxonEnvironment): typeof env.InteractiveCompo
           this.handleLiveMessage(msg.payload);
           break;
           
+        case 'message_sent':
+          this.handleMessageSent(msg);
+          break;
+          
         case 'error':
           console.error('[Discord] Server error:', msg.error);
           this.setConnectionState('error', msg.error);
@@ -490,6 +494,19 @@ export function createModule(env: IAxonEnvironment): typeof env.InteractiveCompo
       
       // Update last read
       this.lastRead[msg.channelId] = msg.messageId;
+    }
+    
+    private handleMessageSent(msg: any): void {
+      const { channelId, messageId, content, timestamp } = msg;
+      
+      console.log(`[Discord] Message sent confirmation - Channel: ${channelId}, ID: ${messageId}`);
+      
+      // Update lastRead to include our sent message
+      this.lastRead[channelId] = messageId;
+      console.log(`[Discord] Updated lastRead for ${channelId} to ${messageId} (our message)`);
+      
+      // Add to processed messages so we don't respond to our own message if we see it later
+      this.processedMessages.add(messageId);
     }
     
   private setConnectionState(state: typeof this.connectionState, error?: string): void {
