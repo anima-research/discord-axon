@@ -413,30 +413,32 @@ export function createModule(env: IAxonEnvironment): typeof env.InteractiveCompo
         }
       }
       
-      // Emit the history as a single event
-      this.element.emit({
-        topic: 'discord:history-received',
-        payload: {
-          channelId,
-          channelName,
-          messages
-        },
-        timestamp: Date.now()
-      });
-      
-      // Add a history event facet
-      this.addFacet({
-        id: `discord-history-${channelId}-${Date.now()}`,
-        type: 'event',
-        content: `Channel #${channelName} history (${messages.length} new messages)`,
-        displayName: 'channel-history',
-        attributes: {
-          channelId,
-          channelName,
-          messageCount: messages.length,
-          guildId: this.guildId
-        },
-        children: messages.map((message: DiscordMessage) => ({
+      // Only emit history event if there are actually new messages
+      if (messages.length > 0) {
+        // Emit the history as a single event
+        this.element.emit({
+          topic: 'discord:history-received',
+          payload: {
+            channelId,
+            channelName,
+            messages
+          },
+          timestamp: Date.now()
+        });
+        
+        // Add a history event facet
+        this.addFacet({
+          id: `discord-history-${channelId}-${Date.now()}`,
+          type: 'event',
+          content: `Channel #${channelName} history (${messages.length} new messages)`,
+          displayName: 'channel-history',
+          attributes: {
+            channelId,
+            channelName,
+            messageCount: messages.length,
+            guildId: this.guildId
+          },
+          children: messages.map((message: DiscordMessage) => ({
           id: `discord-msg-${message.messageId}`,
           type: 'event',
           displayName: 'discord-message',
@@ -450,7 +452,8 @@ export function createModule(env: IAxonEnvironment): typeof env.InteractiveCompo
             guildId: this.guildId
           }
         }))
-      });
+        });
+      }
       
       // Update last read for the channel (after filtering)
       if (messages.length > 0) {
