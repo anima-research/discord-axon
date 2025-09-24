@@ -124,10 +124,15 @@ Be friendly, helpful, and engaging!`,
     }
     console.log('Send messages in Discord to interact with the bot.\n');
     
-    // Keep the process alive
+    // Handle shutdown gracefully
     process.on('SIGINT', async () => {
       console.log('\n🛑 Shutting down...');
-      await host.stop();
+      try {
+        await host.stop();
+        console.log('✅ State saved. Goodbye!');
+      } catch (error) {
+        console.error('❌ Error during shutdown:', error);
+      }
       process.exit(0);
     });
     

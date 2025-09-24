@@ -281,18 +281,22 @@ class CombinedDiscordAxonServer {
           
           connection.joinedChannels.add(channelId);
           
-          // Get recent messages
+          // Get messages after lastMessageId if provided, otherwise get recent messages
           const messages = await channel.messages.fetch({ 
             limit: scrollback,
-            before: lastMessageId 
+            ...(lastMessageId ? { after: lastMessageId } : {})
           });
           
           // Send history
+          // Note: messages.reverse() is only needed when fetching with 'before'
+          // With 'after', messages are already in chronological order
+          const orderedMessages = lastMessageId ? messages : messages.reverse();
+          
           connection.ws.send(JSON.stringify({
             type: 'history',
             channelId: channel.id,
             channelName: channel.name,
-            messages: messages.reverse().map(m => ({
+            messages: orderedMessages.map(m => ({
               channelId: m.channelId,
               messageId: m.id,
               author: m.author.username,

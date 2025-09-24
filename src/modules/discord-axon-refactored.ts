@@ -87,8 +87,7 @@ export function createModule(env: IAxonEnvironment): typeof env.InteractiveCompo
     @external('secret:discord.token')
     protected botToken?: string;
     
-    // Persistent state
-    @persistent
+    // Runtime state (not persisted - always starts as disconnected)
     private connectionState: 'disconnected' | 'connecting' | 'connected' | 'error' = 'disconnected';
     
     @persistent
@@ -121,7 +120,7 @@ export function createModule(env: IAxonEnvironment): typeof env.InteractiveCompo
       { propertyKey: 'guildId' },
       { propertyKey: 'agentName' },
       { propertyKey: 'botUserId' },
-      { propertyKey: 'connectionState' },
+      // connectionState is runtime-only and should not be persisted
       { propertyKey: 'lastError' },
       { propertyKey: 'connectionAttempts' },
       { propertyKey: 'joinedChannels' },
@@ -383,9 +382,32 @@ export function createModule(env: IAxonEnvironment): typeof env.InteractiveCompo
     private handleHistoryMessage(msg: any): void {
       const channelId = msg.channelId;
       const channelName = msg.channelName;
-      const messages = msg.messages || [];
+      let messages = msg.messages || [];
       
       console.log(`[Discord] Received history for channel ${channelName} (${channelId}): ${messages.length} messages`);
+      
+      // Filter out messages we've already seen
+      const lastReadId = this.lastRead[channelId];
+      if (lastReadId && messages.length > 0) {
+        const lastReadBigInt = BigInt(lastReadId);
+        const originalCount = messages.length;
+        
+        // Filter to only keep messages newer than lastRead
+        messages = messages.filter((m: any) => {
+          try {
+            return BigInt(m.messageId) > lastReadBigInt;
+          } catch (e) {
+            console.warn(`[Discord] Invalid message ID: ${m.messageId}`);
+            return false;
+          }
+        });
+        
+        if (messages.length < originalCount) {
+          console.log(`[Discord] Filtered out ${originalCount - messages.length} already-read messages (older than ${lastReadId}), keeping ${messages.length} new messages`);
+        } else {
+          console.log(`[Discord] No messages filtered - all ${messages.length} messages are new (newer than ${lastReadId})`);
+        }
+      }
       
       // Emit the history as a single event
       this.element.emit({
@@ -426,10 +448,11 @@ export function createModule(env: IAxonEnvironment): typeof env.InteractiveCompo
         }))
       });
       
-      // Update last read for the channel
+      // Update last read for the channel (after filtering)
       if (messages.length > 0) {
         const lastMessage = messages[messages.length - 1];
         this.lastRead[channelId] = lastMessage.messageId;
+        console.log(`[Discord] Updated lastRead for ${channelId} to ${lastMessage.messageId}`);
       }
     }
     
