@@ -91,12 +91,12 @@ class DiscordAutoJoinComponent extends Component {
 export class DiscordApplication implements ConnectomeApplication {
   constructor(private config: DiscordAppConfig) {}
   
-  async createSpace(): Promise<{ space: Space; veilState: VEILStateManager }> {
+  async createSpace(hostRegistry?: Map<string, any>): Promise<{ space: Space; veilState: VEILStateManager }> {
     const veilState = new VEILStateManager();
-    const space = new Space(veilState);
+    const space = new Space(veilState, hostRegistry);
     
-    // Register llmProvider reference that will be injected by Host
-    space.registerReference('llmProvider', this.config.llmProviderId);
+    // The Host will inject the actual llmProvider based on the config
+    // No need to register the ID here
     
     return { space, veilState };
   }
@@ -109,8 +109,8 @@ export class DiscordApplication implements ConnectomeApplication {
     const axonLoader = new AxonLoaderComponent();
     
     // Build the AXON URL with connection parameters
-    // Default to module server port (8082)
-    const modulePort = this.config.discord.modulePort || 8082;
+    // Default to module server port (8080)
+    const modulePort = this.config.discord.modulePort || 8080;
     const axonUrl = `axon://localhost:${modulePort}/modules/discord-chat/manifest?` + 
       `host=${encodeURIComponent(this.config.discord.host)}&` +
       `path=${encodeURIComponent('/ws')}&` +
