@@ -50,10 +50,13 @@ interface DiscordConnectionParams {
 
 interface DiscordMessage {
   channelId: string;
+  channelName?: string;
   messageId: string;
   author: string;
   content: string;
   timestamp: string;
+  guildId?: string;
+  guildName?: string;
 }
 
 // Module factory function
@@ -78,6 +81,9 @@ export function createModule(env: IAxonEnvironment): typeof env.InteractiveCompo
     protected guildId: string = '';
     
     @persistent
+    protected guildName: string = '';
+    
+    @persistent
     protected agentName: string = 'Connectome Agent';
     
     @persistent
@@ -100,6 +106,9 @@ export function createModule(env: IAxonEnvironment): typeof env.InteractiveCompo
     protected joinedChannels: string[] = [];
     
     @persistent
+    private channelNames: Record<string, string> = {}; // channelId -> channelName
+    
+    @persistent
     private lastRead: Record<string, string> = {};
     
     @persistent
@@ -118,12 +127,14 @@ export function createModule(env: IAxonEnvironment): typeof env.InteractiveCompo
       { propertyKey: 'serverUrl' },
       { propertyKey: 'connectionParams' },
       { propertyKey: 'guildId' },
+      { propertyKey: 'guildName' },
       { propertyKey: 'agentName' },
       { propertyKey: 'botUserId' },
       // connectionState is runtime-only and should not be persisted
       { propertyKey: 'lastError' },
       { propertyKey: 'connectionAttempts' },
       { propertyKey: 'joinedChannels' },
+      { propertyKey: 'channelNames' },
       { propertyKey: 'lastRead' },
       { propertyKey: 'scrollbackLimit' }
     ];
@@ -187,6 +198,24 @@ export function createModule(env: IAxonEnvironment): typeof env.InteractiveCompo
       console.log('[Discord] Params set - serverUrl:', this.serverUrl, 'botToken:', this.botToken ? 'set' : 'not set');
     }
     
+    /**
+     * Build a human-readable stream ID for Discord channels
+     */
+    protected buildStreamId(channelName?: string, guildName?: string, isDM: boolean = false): string {
+      if (isDM && channelName) {
+        // DMs use format: discord:@username
+        return `discord:@${channelName}`;
+      } else if (channelName && guildName) {
+        // Channels use format: discord:ServerName:#channel-name
+        return `discord:${guildName}:#${channelName}`;
+      } else if (channelName) {
+        // Fallback if no guild name
+        return `discord:#${channelName}`;
+      }
+      // Ultimate fallback
+      return 'discord:unknown';
+    }
+    
     async onMount(): Promise<void> {
       console.log('[Discord] Component mounted');
       
@@ -194,6 +223,12 @@ export function createModule(env: IAxonEnvironment): typeof env.InteractiveCompo
       this.element.subscribe('frame:start');
       this.element.subscribe('frame:end'); 
       this.element.subscribe('element:action');
+      
+      // Subscribe to control panel events
+      this.element.subscribe('discord:request-guilds');
+      this.element.subscribe('discord:request-channels');
+      this.element.subscribe('discord:join-channel');
+      this.element.subscribe('discord:leave-channel');
     }
     
     async handleEvent(event: ISpaceEvent): Promise<void> {
@@ -215,6 +250,14 @@ export function createModule(env: IAxonEnvironment): typeof env.InteractiveCompo
           this.shouldConnectOnNextFrame = false;
           await this.startConnection();
         }
+      } else if (event.topic === 'discord:request-guilds') {
+        await this.handleRequestGuilds();
+      } else if (event.topic === 'discord:request-channels') {
+        await this.handleRequestChannels(event.payload);
+      } else if (event.topic === 'discord:join-channel') {
+        await this.handleJoinChannel(event.payload);
+      } else if (event.topic === 'discord:leave-channel') {
+        await this.handleLeaveChannel(event.payload);
       }
     }
     
@@ -378,6 +421,53 @@ export function createModule(env: IAxonEnvironment): typeof env.InteractiveCompo
           this.setConnectionState('error', msg.error);
           break;
           
+        case 'guilds':
+          console.log('[Discord] Received guilds list:', msg.guilds);
+          this.element.emit({
+            topic: 'discord:guilds-listed',
+            payload: msg.guilds || [],
+            timestamp: Date.now()
+          });
+          break;
+          
+        case 'channels':
+          console.log('[Discord] Received channels list:', msg.channels);
+          this.element.emit({
+            topic: 'discord:channels-listed',
+            payload: {
+              guildId: msg.guildId,
+              channels: msg.channels || []
+            },
+            timestamp: Date.now()
+          });
+          break;
+          
+        case 'joined':
+          console.log('[Discord] Joined channel:', msg.channel);
+          if (!this.joinedChannels.includes(msg.channel.id)) {
+            this.joinedChannels.push(msg.channel.id);
+          }
+          // Store channel name for later use
+          if (msg.channel.name && msg.channel.id) {
+            this.channelNames[msg.channel.id] = msg.channel.name;
+          }
+          this.element.emit({
+            topic: 'discord:channel-joined',
+            payload: msg.channel,
+            timestamp: Date.now()
+          });
+          break;
+          
+        case 'left':
+          console.log('[Discord] Left channel:', msg.channelId);
+          this.joinedChannels = this.joinedChannels.filter(id => id !== msg.channelId);
+          this.element.emit({
+            topic: 'discord:channel-left',
+            payload: msg.channelId,
+            timestamp: Date.now()
+          });
+          break;
+          
         default:
           console.warn('[Discord] Unknown message type:', msg.type);
       }
@@ -386,9 +476,21 @@ export function createModule(env: IAxonEnvironment): typeof env.InteractiveCompo
     private handleHistoryMessage(msg: any): void {
       const channelId = msg.channelId;
       const channelName = msg.channelName;
+      const guildId = msg.guildId;
+      const guildName = msg.guildName;
       let messages = msg.messages || [];
       
       console.log(`[Discord] Received history for channel ${channelName} (${channelId}): ${messages.length} messages`);
+      
+      // Update guild name if provided
+      if (guildName && guildId === this.guildId) {
+        this.guildName = guildName;
+      }
+      
+      // Store channel name for later use
+      if (channelName && channelId) {
+        this.channelNames[channelId] = channelName;
+      }
       
       // Filter out messages we've already seen
       const lastReadId = this.lastRead[channelId];
@@ -472,10 +574,27 @@ export function createModule(env: IAxonEnvironment): typeof env.InteractiveCompo
       // Don't add to processedMessages here - let the chat component handle its own tracking
       // this.processedMessages.add(msg.messageId);
       
-      // Emit message event
+      // Update guild name if provided
+      if (msg.guildName && msg.guildId === this.guildId) {
+        this.guildName = msg.guildName;
+      }
+      
+      // Store channel name for later use
+      if (msg.channelName && msg.channelId) {
+        this.channelNames[msg.channelId] = msg.channelName;
+      }
+      
+      // Build stream ID
+      const streamId = this.buildStreamId(msg.channelName, msg.guildName || this.guildName);
+      
+      // Emit message event with stream info
       this.element.emit({
         topic: 'discord:message',
-        payload: msg,
+        payload: {
+          ...msg,
+          streamId,
+          streamType: 'discord'
+        },
         timestamp: Date.now()
       });
       
@@ -487,11 +606,15 @@ export function createModule(env: IAxonEnvironment): typeof env.InteractiveCompo
         content: `${msg.author}: ${msg.content}`,
         attributes: {
           channelId: msg.channelId,
+          channelName: msg.channelName,
           messageId: msg.messageId,
           author: msg.author,
           content: msg.content,
           timestamp: msg.timestamp,
-          guildId: this.guildId
+          guildId: this.guildId,
+          guildName: msg.guildName || this.guildName,
+          streamId,
+          streamType: 'discord'
         }
       });
       
@@ -621,21 +744,83 @@ export function createModule(env: IAxonEnvironment): typeof env.InteractiveCompo
         message
       }));
       
-      // Add send event
-      this.addFacet({
-        id: `discord-send-${Date.now()}`,
-        type: 'action',
-        displayName: 'discord-send',
-        content: JSON.stringify({ channelId, message }),
-        attributes: {
-          agentGenerated: false,
-          toolName: 'discord-send',
-          parameters: {
-            channelId,
-            message
-          }
-        }
-      });
+      // Note: We don't create an action facet here because if this was triggered
+      // by an agent's speak operation, there's already a speech facet for it.
+      // Creating another facet would be redundant noise in the VEIL state.
+    }
+    
+    // Control panel handlers
+    private async handleRequestGuilds(): Promise<void> {
+      console.log('[Discord] Requesting guilds list');
+      
+      if (this.connectionState !== 'connected') {
+        console.warn('[Discord] Cannot request guilds - not connected');
+        return;
+      }
+      
+      this.ws?.send(JSON.stringify({
+        type: 'listGuilds'
+      }));
+    }
+    
+    private async handleRequestChannels(payload: any): Promise<void> {
+      console.log('[Discord] Requesting channels for guild:', payload);
+      
+      if (this.connectionState !== 'connected') {
+        console.warn('[Discord] Cannot request channels - not connected');
+        return;
+      }
+      
+      const guildId = payload?.guildId || this.guildId;
+      if (!guildId) {
+        console.warn('[Discord] No guild ID specified for channel request');
+        return;
+      }
+      
+      this.ws?.send(JSON.stringify({
+        type: 'listChannels',
+        guildId
+      }));
+    }
+    
+    private async handleJoinChannel(payload: any): Promise<void> {
+      console.log('[Discord] Joining channel:', payload);
+      
+      if (this.connectionState !== 'connected') {
+        console.warn('[Discord] Cannot join channel - not connected');
+        return;
+      }
+      
+      const channelId = payload?.channelId;
+      if (!channelId) {
+        console.warn('[Discord] No channel ID specified for join request');
+        return;
+      }
+      
+      this.ws?.send(JSON.stringify({
+        type: 'join',
+        channelId
+      }));
+    }
+    
+    private async handleLeaveChannel(payload: any): Promise<void> {
+      console.log('[Discord] Leaving channel:', payload);
+      
+      if (this.connectionState !== 'connected') {
+        console.warn('[Discord] Cannot leave channel - not connected');
+        return;
+      }
+      
+      const channelId = payload?.channelId;
+      if (!channelId) {
+        console.warn('[Discord] No channel ID specified for leave request');
+        return;
+      }
+      
+      this.ws?.send(JSON.stringify({
+        type: 'leave',
+        channelId
+      }));
     }
     
     async onUnmount(): Promise<void> {

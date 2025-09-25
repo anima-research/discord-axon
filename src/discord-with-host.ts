@@ -116,13 +116,34 @@ Be friendly, helpful, and engaging!`,
   try {
     const space = await host.start(app);
     
+    // Create Discord control panel element
+    console.log('📋 Creating Discord control panel...');
+    
+    // Import required classes
+    const { Element } = await import('connectome-ts/src/spaces/element');
+    const { AxonLoaderComponent } = await import('connectome-ts/src/components/axon-loader');
+    
+    const controlElement = new Element('discord-control', 'Discord Control Panel');
+    const loader = new AxonLoaderComponent();
+    await controlElement.addComponentAsync(loader);
+    
+    // Add to space
+    space.addChild(controlElement);
+    
+    // Connect to the control panel module
+    await loader.connect('axon://localhost:8080/modules/discord-control-panel/manifest');
+    
     console.log('\n📡 Discord bot is running!');
+    console.log(`🔧 Debug interface: http://localhost:${debugPort}`);
+    console.log('📋 Discord control panel loaded - use actions to manage servers/channels');
+    
     if (useDebugLLM) {
-      console.log('🧪 Debug LLM mode active - use the debug UI to complete responses manually');
-      console.log(`🌐 Debug UI available at: http://localhost:${debugPort}`);
+      console.log('\n🧪 Debug LLM mode active - use the debug UI to complete responses manually');
       console.log('📝 Navigate to "Manual LLM Completions" panel to handle requests');
     }
-    console.log('Send messages in Discord to interact with the bot.\n');
+    
+    console.log('\nSend messages in Discord to interact with the bot.');
+    console.log('Use the debug interface to view VEIL state and execute control panel actions.\n');
     
     // Handle shutdown gracefully
     process.on('SIGINT', async () => {

@@ -91,9 +91,9 @@ export function createModule(env: IAxonEnvironment): any {
     @persistent
     private cooldowns: CooldownEntry[] = [];
     
-    // Track last active channel for responses
+    // Track last active stream for responses
     @persistent
-    private lastActiveChannel?: string;
+    private lastActiveStream?: { streamId: string; channelId: string };
     
     // Track processed messages to avoid duplicates
     private processedMessages: Set<string> = new Set();
@@ -102,7 +102,7 @@ export function createModule(env: IAxonEnvironment): any {
     static persistentProperties: IPersistentMetadata[] = [
       { propertyKey: 'triggerConfig' },
       { propertyKey: 'cooldowns' },
-      { propertyKey: 'lastActiveChannel' },
+      { propertyKey: 'lastActiveStream' },
       // Include parent properties if needed
       ...(DiscordAxonComponent as any).persistentProperties || []
     ];
@@ -198,8 +198,13 @@ export function createModule(env: IAxonEnvironment): any {
         // Mark as processed
         this.processedMessages.add(msg.messageId);
         
-        // Update last active channel
-        this.lastActiveChannel = msg.channelId;
+        // Update last active stream
+        if (msg.streamId) {
+          this.lastActiveStream = {
+            streamId: msg.streamId,
+            channelId: msg.channelId
+          };
+        }
         
         console.log(`[DiscordChat] Current botUserId: ${this.botUserId}`);
         
@@ -207,16 +212,38 @@ export function createModule(env: IAxonEnvironment): any {
         if (this.shouldRespond(msg)) {
           console.log(`[DiscordChat] Triggering agent activation for channel ${msg.channelId}`);
           
-          // Add agent activation operation
-          this.addOperation({
+          // Get the current frame if available
+          const space = this.element?.space;
+          const frame = space && (space as any).getCurrentFrame && (space as any).getCurrentFrame();
+          
+          // Set active stream if we have a frame
+          if (frame && msg.streamId) {
+            frame.activeStream = {
+              streamId: msg.streamId,
+              streamType: msg.streamType || 'discord',
+              metadata: {
+                channelId: msg.channelId,
+                channelName: msg.channelName,
+                guildId: msg.guildId,
+                guildName: msg.guildName
+              }
+            };
+            console.log(`[DiscordChat] Set activeStream to ${msg.streamId}`);
+          }
+          
+          // Request agent activation via facet
+          this.addFacet({
+            id: `agent-activation-discord-${Date.now()}`,
             type: 'agentActivation',
-            source: 'discord-chat',
-            reason: this.getTriggerReason(msg) || 'discord_message',
-            priority: 'normal',
-            metadata: {
+            content: this.getTriggerReason(msg) || 'Discord message received',
+            attributes: {
+              source: 'discord-chat',
+              reason: this.getTriggerReason(msg) || 'discord_message',
+              priority: 'normal',
               channelId: msg.channelId,
               messageId: msg.messageId,
-              author: msg.author
+              author: msg.author,
+              streamId: msg.streamId
             }
           });
           
@@ -255,17 +282,19 @@ export function createModule(env: IAxonEnvironment): any {
             if (op.type === 'speak') {
               console.log(`[DiscordChat] Found speak operation: "${op.content}"`);
               
-              // Send to the last active channel
-              const targetChannel = this.getLastActiveChannel();
+              // Check if speak operation targets our stream or no target (default routing)
+              const shouldSend = !op.target || 
+                (op.target === this.lastActiveStream?.streamId) ||
+                (op.target && op.target.startsWith('discord:') && this.lastActiveStream);
               
-              if (targetChannel) {
-                console.log(`[DiscordChat] Sending to Discord channel: ${targetChannel}`);
+              if (shouldSend && this.lastActiveStream?.channelId) {
+                console.log(`[DiscordChat] Sending to Discord channel via stream ${this.lastActiveStream.streamId}`);
                 await (this as any).send({ 
-                  channelId: targetChannel, 
+                  channelId: this.lastActiveStream.channelId, 
                   message: op.content 
                 });
-              } else {
-                console.warn('[DiscordChat] No active channel to send agent response to.');
+              } else if (shouldSend) {
+                console.warn('[DiscordChat] No active stream to send agent response to.');
               }
             }
           }
@@ -349,6 +378,7 @@ export function createModule(env: IAxonEnvironment): any {
         for (const keyword of this.triggerConfig.keywords) {
           console.log(`[DiscordChat] Checking if "${content}" includes "${keyword.toLowerCase()}"`);
           if (content.includes(keyword.toLowerCase())) {
+            console.log(`[DiscordChat] Found keyword: "${keyword}"`);
             return `keyword:${keyword}`;
           }
         }
@@ -394,12 +424,6 @@ export function createModule(env: IAxonEnvironment): any {
       });
     }
     
-    /**
-     * Get the last active channel
-     */
-    private getLastActiveChannel(): string | undefined {
-      return this.lastActiveChannel;
-    }
   }
   
   return DiscordChatComponent;

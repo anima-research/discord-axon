@@ -109,7 +109,51 @@ class CombinedDiscordAxonServer {
         actions: {
           'setTriggerConfig': {
             description: 'Configure chat triggers',
-            parameters: { config: { type: 'object', required: true } }
+            parameters: { config: { type: 'object', required: true }             }
+          }
+        }
+      }
+    });
+    
+    await this.moduleServer.addModule('discord-control-panel', {
+      name: 'discord-control-panel',
+      path: join(modulesDir, 'discord-control-panel.ts'),
+      manifest: {
+        name: 'DiscordControlPanelComponent',
+        version: '1.0.0',
+        description: 'Discord server and channel management UI',
+        componentClass: 'DiscordControlPanelComponent',
+        moduleType: 'function',
+        actions: {
+          'listServers': {
+            description: 'List all Discord servers',
+            parameters: {}
+          },
+          'selectServer': {
+            description: 'Select a server',
+            parameters: { serverName: { type: 'string', required: true } }
+          },
+          'listChannels': {
+            description: 'List channels in a server',
+            parameters: { serverName: { type: 'string', required: false } }
+          },
+          'joinChannel': {
+            description: 'Join a channel',
+            parameters: { 
+              channelName: { type: 'string', required: true },
+              serverName: { type: 'string', required: false }
+            }
+          },
+          'leaveChannel': {
+            description: 'Leave a channel',
+            parameters: { 
+              channelName: { type: 'string', required: true },
+              serverName: { type: 'string', required: false }
+            }
+          },
+          'showJoinedChannels': {
+            description: 'Show all joined channels',
+            parameters: {}
           }
         }
       }
@@ -252,7 +296,9 @@ class CombinedDiscordAxonServer {
               author: message.author.username,
               content: message.content,
               timestamp: message.createdAt.toISOString(),
-              guildId: message.guildId
+              guildId: message.guildId,
+              guildName: message.guild?.name,
+              channelName: (message.channel as TextChannel).name
             }
           }));
           
@@ -296,6 +342,8 @@ class CombinedDiscordAxonServer {
             type: 'history',
             channelId: channel.id,
             channelName: channel.name,
+            guildId: channel.guildId,
+            guildName: channel.guild?.name,
             messages: orderedMessages.map(m => ({
               channelId: m.channelId,
               messageId: m.id,
@@ -303,6 +351,18 @@ class CombinedDiscordAxonServer {
               content: m.content,
               timestamp: m.createdAt.toISOString()
             }))
+          }));
+          
+          // Send joined confirmation with channel info
+          connection.ws.send(JSON.stringify({
+            type: 'joined',
+            channel: {
+              id: channel.id,
+              name: channel.name,
+              type: channel.type,
+              guildId: channel.guildId,
+              guildName: channel.guild?.name
+            }
           }));
           
           console.log(`[Server] Agent joined channel: ${channel.name} (${channelId})`);
@@ -319,6 +379,13 @@ class CombinedDiscordAxonServer {
       case 'leave': {
         const { channelId } = msg;
         connection.joinedChannels.delete(channelId);
+        
+        // Send left confirmation
+        connection.ws.send(JSON.stringify({
+          type: 'left',
+          channelId
+        }));
+        
         console.log(`[Server] Agent left channel: ${channelId}`);
         break;
       }
@@ -348,6 +415,70 @@ class CombinedDiscordAxonServer {
           connection.ws.send(JSON.stringify({
             type: 'error',
             error: `Failed to send message: ${error.message}`
+          }));
+        }
+        break;
+      }
+      
+      case 'listGuilds': {
+        try {
+          const guilds = this.discord.guilds.cache.map(guild => ({
+            id: guild.id,
+            name: guild.name,
+            icon: guild.iconURL(),
+            memberCount: guild.memberCount
+          }));
+          
+          connection.ws.send(JSON.stringify({
+            type: 'guilds',
+            guilds
+          }));
+          
+          console.log(`[Server] Sent guilds list to ${connection.agentName} (${guilds.length} guilds)`);
+        } catch (error: any) {
+          console.error(`[Server] Failed to list guilds:`, error);
+          connection.ws.send(JSON.stringify({
+            type: 'error',
+            error: `Failed to list guilds: ${error.message}`
+          }));
+        }
+        break;
+      }
+      
+      case 'listChannels': {
+        const { guildId } = msg;
+        
+        try {
+          const guild = await this.discord.guilds.fetch(guildId);
+          if (!guild) {
+            throw new Error('Guild not found');
+          }
+          
+          const channels = guild.channels.cache
+            .filter(channel => channel.isTextBased())
+            .map(channel => ({
+              id: channel.id,
+              name: channel.name,
+              type: channel.type,
+              guildId: guild.id,
+              guildName: guild.name,
+              parentId: channel.parentId,
+              position: 'position' in channel ? channel.position : 0
+            }))
+            .sort((a, b) => a.position - b.position);
+          
+          connection.ws.send(JSON.stringify({
+            type: 'channels',
+            guildId,
+            channels
+          }));
+          
+          console.log(`[Server] Sent channels list for guild ${guild.name} to ${connection.agentName} (${channels.length} channels)`);
+        } catch (error: any) {
+          console.error(`[Server] Failed to list channels:`, error);
+          connection.ws.send(JSON.stringify({
+            type: 'error',
+            error: `Failed to list channels: ${error.message}`
           }));
         }
         break;
