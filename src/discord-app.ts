@@ -34,7 +34,7 @@ class DiscordAutoJoinComponent extends Component {
   @persistent() private channels: string[] = [];
   @persistent() private hasJoined: boolean = false;
   
-  constructor(channels: string[] = ['1289595876716707914']) {  // Default to #general channel ID
+  constructor(channels: string[] = []) {  // No default channel - must be configured
     super();
     this.channels = channels;
   }
