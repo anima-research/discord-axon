@@ -122,6 +122,10 @@ export function createModule(env: IAxonEnvironment): typeof env.InteractiveCompo
     private shouldConnectOnNextFrame: boolean = false;
     private pendingMessages: any[] = [];
     
+    // Track message IDs by channel for deletion detection
+    @persistent
+    private channelMessages: Record<string, string[]> = {};
+    
     // Static metadata for persistence
     static persistentProperties: IPersistentMetadata[] = [
       { propertyKey: 'serverUrl' },
@@ -136,7 +140,8 @@ export function createModule(env: IAxonEnvironment): typeof env.InteractiveCompo
       { propertyKey: 'joinedChannels' },
       { propertyKey: 'channelNames' },
       { propertyKey: 'lastRead' },
-      { propertyKey: 'scrollbackLimit' }
+      { propertyKey: 'scrollbackLimit' },
+      { propertyKey: 'channelMessages' }
     ];
     
     static externalResources: IExternalMetadata[] = [
@@ -416,6 +421,14 @@ export function createModule(env: IAxonEnvironment): typeof env.InteractiveCompo
           this.handleMessageSent(msg);
           break;
           
+        case 'messageUpdate':
+          this.handleMessageUpdate(msg.payload);
+          break;
+          
+        case 'messageDelete':
+          this.handleMessageDelete(msg.payload);
+          break;
+          
         case 'error':
           console.error('[Discord] Server error:', msg.error);
           this.setConnectionState('error', msg.error);
@@ -492,6 +505,52 @@ export function createModule(env: IAxonEnvironment): typeof env.InteractiveCompo
         this.channelNames[channelId] = channelName;
       }
       
+      // Detect deleted messages (only if we have existing messages tracked)
+      if (this.channelMessages[channelId] && this.channelMessages[channelId].length > 0) {
+        const receivedMessageIds = new Set(messages.map((m: any) => m.messageId));
+        const deletedMessageIds = this.channelMessages[channelId].filter(id => !receivedMessageIds.has(id));
+        
+        if (deletedMessageIds.length > 0) {
+          console.log(`[Discord] Detected ${deletedMessageIds.length} deleted messages in channel ${channelId}`);
+          
+          // Mark deleted messages
+          for (const messageId of deletedMessageIds) {
+            const facetId = `discord-msg-${messageId}`;
+            const streamId = this.buildStreamId(channelName, guildName || this.guildName);
+            
+            // Emit delete event for each deleted message
+            this.element.emit({
+              topic: 'discord:messageDelete',
+              payload: {
+                channelId,
+                messageId,
+                timestamp: new Date().toISOString(),
+                guildId: this.guildId,
+                guildName: guildName || this.guildName,
+                channelName,
+                streamId,
+                streamType: 'discord',
+                facetId,
+                detectedOnReconnect: true
+              },
+              timestamp: Date.now()
+            });
+            
+            // Update the facet to mark as deleted
+            this.updateState(facetId, {
+              attributes: {
+                deleted: true,
+                deletedAt: new Date().toISOString(),
+                detectedOnReconnect: true
+              }
+            });
+          }
+          
+          // Update our tracking to remove deleted messages
+          this.channelMessages[channelId] = this.channelMessages[channelId].filter(id => receivedMessageIds.has(id));
+        }
+      }
+      
       // Filter out messages we've already seen
       const lastReadId = this.lastRead[channelId];
       if (lastReadId && messages.length > 0) {
@@ -562,6 +621,36 @@ export function createModule(env: IAxonEnvironment): typeof env.InteractiveCompo
         const lastMessage = messages[messages.length - 1];
         this.lastRead[channelId] = lastMessage.messageId;
         console.log(`[Discord] Updated lastRead for ${channelId} to ${lastMessage.messageId}`);
+        
+        // Check for deleted messages if we have tracked messages for this channel
+        if (this.channelMessages[channelId] && this.channelMessages[channelId].length > 0) {
+          const receivedMessageIds = new Set(messages.map((m: DiscordMessage) => m.messageId));
+          const deletedMessages = this.channelMessages[channelId].filter(id => !receivedMessageIds.has(id));
+          
+          if (deletedMessages.length > 0) {
+            console.log(`[Discord] Detected ${deletedMessages.length} deleted messages in channel ${channelId}`);
+            
+            // Mark deleted messages
+            for (const messageId of deletedMessages) {
+              const facetId = `discord-msg-${messageId}`;
+              // Emit deletion event
+              this.element.emit({
+                topic: 'discord:messageDelete',
+                payload: {
+                  messageId,
+                  channelId,
+                  timestamp: new Date().toISOString()
+                }
+              });
+            }
+          }
+        }
+        
+        // Update tracked message IDs
+        if (!this.channelMessages[channelId]) {
+          this.channelMessages[channelId] = [];
+        }
+        this.channelMessages[channelId] = messages.map((m: DiscordMessage) => m.messageId);
       }
     }
     
@@ -618,6 +707,12 @@ export function createModule(env: IAxonEnvironment): typeof env.InteractiveCompo
         }
       });
       
+      // Track message ID for this channel
+      if (!this.channelMessages[msg.channelId]) {
+        this.channelMessages[msg.channelId] = [];
+      }
+      this.channelMessages[msg.channelId].push(msg.messageId);
+      
       // Update last read
       this.lastRead[msg.channelId] = msg.messageId;
     }
@@ -633,6 +728,84 @@ export function createModule(env: IAxonEnvironment): typeof env.InteractiveCompo
       
       // Add to processed messages so we don't respond to our own message if we see it later
       this.processedMessages.add(messageId);
+    }
+    
+    private handleMessageUpdate(msg: any): void {
+      const { channelId, messageId, content, oldContent, author, timestamp } = msg;
+      
+      console.log(`[Discord] Message updated - ID: ${messageId}, Author: ${author}`);
+      
+      const facetId = `discord-msg-${messageId}`;
+      const streamId = this.buildStreamId(msg.channelName, msg.guildName || this.guildName);
+      
+      // Emit update event
+      this.element.emit({
+        topic: 'discord:messageUpdate',
+        payload: {
+          ...msg,
+          streamId,
+          streamType: 'discord',
+          facetId
+        },
+        timestamp: Date.now()
+      });
+      
+      // Update the facet using the changeFacet operation
+      this.addOperation({
+        type: 'changeFacet',
+        facetId,
+        updates: {
+          content: `${author}: ${content}`,
+          attributes: {
+            content,
+            originalContent: oldContent,
+            edited: true,
+            editedAt: timestamp
+          }
+        }
+      });
+    }
+    
+    private handleMessageDelete(msg: any): void {
+      const { channelId, messageId, author, timestamp } = msg;
+      
+      console.log(`[Discord] Message deleted - ID: ${messageId}, Author: ${author || 'unknown'}`);
+      
+      const facetId = `discord-msg-${messageId}`;
+      const streamId = this.buildStreamId(msg.channelName, msg.guildName || this.guildName);
+      
+      // Emit delete event
+      this.element.emit({
+        topic: 'discord:messageDelete',
+        payload: {
+          ...msg,
+          streamId,
+          streamType: 'discord',
+          facetId
+        },
+        timestamp: Date.now()
+      });
+      
+      // Update the facet to mark as deleted rather than removing it
+      // This preserves history while indicating the message is no longer visible
+        this.addOperation({
+        type: 'changeFacet',
+        facetId,
+        updates: {
+          attributes: {
+            deleted: true,
+            deletedAt: timestamp
+          }
+        }
+      });
+      
+      // Remove from channel messages tracking
+      if (this.channelMessages[channelId]) {
+        const index = this.channelMessages[channelId].indexOf(messageId);
+        if (index > -1) {
+          this.channelMessages[channelId].splice(index, 1);
+        }
+      }
     }
     
   private setConnectionState(state: typeof this.connectionState, error?: string): void {

@@ -91,6 +91,13 @@ export function createModule(env: IAxonEnvironment): any {
     @persistent
     private cooldowns: CooldownEntry[] = [];
     
+    // Settings for message updates/deletes
+    @persistent
+    private messageUpdateSettings = {
+      silentMode: false,  // If true, don't emit events for edits/deletes
+      preserveDeletedFacets: true  // If true, mark as deleted; if false, remove facet
+    };
+    
     // Track last active stream for responses
     @persistent
     private lastActiveStream?: { streamId: string; channelId: string };
@@ -103,6 +110,7 @@ export function createModule(env: IAxonEnvironment): any {
       { propertyKey: 'triggerConfig' },
       { propertyKey: 'cooldowns' },
       { propertyKey: 'lastActiveStream' },
+      { propertyKey: 'messageUpdateSettings' },
       // Include parent properties if needed
       ...(DiscordAxonComponent as any).persistentProperties || []
     ];
@@ -121,6 +129,19 @@ export function createModule(env: IAxonEnvironment): any {
         parameters: {
           config: { type: 'object', required: true }
         }
+      },
+      'setMessageUpdateSettings': {
+        description: 'Configure how message edits and deletes are handled',
+        parameters: {
+          settings: { 
+            type: 'object', 
+            required: true,
+            properties: {
+              silentMode: { type: 'boolean', description: 'If true, do not emit events for edits/deletes' },
+              preserveDeletedFacets: { type: 'boolean', description: 'If true, mark deleted; if false, remove facet' }
+            }
+          }
+        }
       }
     };
     
@@ -129,6 +150,7 @@ export function createModule(env: IAxonEnvironment): any {
       
       // Register additional action handlers
       this.registerAction('setTriggerConfig', this.setTriggerConfig.bind(this));
+      this.registerAction('setMessageUpdateSettings', this.setMessageUpdateSettings.bind(this));
     }
     
     // Override to handle chat-specific parameters
@@ -271,6 +293,56 @@ export function createModule(env: IAxonEnvironment): any {
         }
       }
       
+      // Handle message updates
+      if (event.topic === 'discord:messageUpdate') {
+        const { messageId, content, oldContent, facetId, author } = event.payload as any;
+        console.log(`[DiscordChat] Message ${messageId} updated by ${author}`);
+        
+        if (!this.messageUpdateSettings.silentMode) {
+          // Emit a notification event
+          this.element.emit({
+            topic: 'discord:message-edited',
+            payload: {
+              messageId,
+              facetId,
+              newContent: content,
+              oldContent,
+              author
+            },
+            timestamp: Date.now()
+          });
+        }
+      }
+      
+      // Handle message deletes
+      if (event.topic === 'discord:messageDelete') {
+        const { messageId, facetId, author, detectedOnReconnect } = event.payload as any;
+        console.log(`[DiscordChat] Message ${messageId} deleted${detectedOnReconnect ? ' (detected on reconnect)' : ''}`);
+        
+        if (!this.messageUpdateSettings.silentMode) {
+          // Emit a notification event
+          this.element.emit({
+            topic: 'discord:message-deleted',
+            payload: {
+              messageId,
+              facetId,
+              author,
+              detectedOnReconnect
+            },
+            timestamp: Date.now()
+          });
+        }
+        
+        // If configured to remove facets entirely instead of marking as deleted
+        if (!this.messageUpdateSettings.preserveDeletedFacets && facetId) {
+          this.addOperation({
+            type: 'removeFacet',
+            facetId,
+            mode: 'delete'
+          });
+        }
+      }
+      
       // Handle agent frame ready events
       if (event.topic === 'agent:frame-ready') {
         const { frame } = event.payload as any;
@@ -320,6 +392,24 @@ export function createModule(env: IAxonEnvironment): any {
         displayName: 'trigger-config',
         content: 'Chat trigger configuration updated',
         attributes: this.triggerConfig
+      });
+    }
+    
+    async setMessageUpdateSettings(params: { settings: Partial<{ silentMode: boolean; preserveDeletedFacets: boolean }> }): Promise<void> {
+      this.messageUpdateSettings = {
+        ...this.messageUpdateSettings,
+        ...params.settings
+      };
+      
+      console.log('[DiscordChat] Updated message update settings:', this.messageUpdateSettings);
+      
+      // Add settings update facet
+      this.addFacet({
+        id: `message-update-settings-${Date.now()}`,
+        type: 'state',
+        displayName: 'message-update-settings',
+        content: 'Message update/delete handling settings updated',
+        attributes: this.messageUpdateSettings
       });
     }
     

@@ -282,8 +282,8 @@ class CombinedDiscordAxonServer {
     });
     
     this.discord.on('messageCreate', async (message) => {
-      // Skip bot messages (including our own)
-      if (message.author.bot) return;
+      // Skip messages from our own bot to prevent loops
+      if (message.author.id === this.discord.user?.id) return;
       
       // Forward to all agents that have joined this channel
       for (const [id, connection] of this.connections) {
@@ -294,6 +294,8 @@ class CombinedDiscordAxonServer {
               channelId: message.channelId,
               messageId: message.id,
               author: message.author.username,
+              authorId: message.author.id,
+              isBot: message.author.bot,
               content: message.content,
               timestamp: message.createdAt.toISOString(),
               guildId: message.guildId,
@@ -304,6 +306,55 @@ class CombinedDiscordAxonServer {
           
           // Update last read
           connection.lastRead.set(message.channelId, message.id);
+        }
+      }
+    });
+    
+    // Handle message edits
+    this.discord.on('messageUpdate', async (oldMessage, newMessage) => {
+      // Forward to all agents that have joined this channel
+      // Note: We don't filter bot messages here - agents need to know about edits to all messages
+      for (const [id, connection] of this.connections) {
+        if (connection.joinedChannels.has(newMessage.channelId)) {
+          connection.ws.send(JSON.stringify({
+            type: 'messageUpdate',
+            payload: {
+              channelId: newMessage.channelId,
+              messageId: newMessage.id,
+              author: newMessage.author?.username,
+              authorId: newMessage.author?.id,
+              isBot: newMessage.author?.bot || false,
+              content: newMessage.content,
+              oldContent: oldMessage.content,
+              timestamp: newMessage.editedAt?.toISOString() || newMessage.createdAt?.toISOString(),
+              guildId: newMessage.guildId,
+              guildName: newMessage.guild?.name,
+              channelName: (newMessage.channel as TextChannel).name
+            }
+          }));
+        }
+      }
+    });
+    
+    // Handle message deletes
+    this.discord.on('messageDelete', async (message) => {
+      // Forward to all agents that have joined this channel
+      for (const [id, connection] of this.connections) {
+        if (connection.joinedChannels.has(message.channelId)) {
+          connection.ws.send(JSON.stringify({
+            type: 'messageDelete',
+            payload: {
+              channelId: message.channelId,
+              messageId: message.id,
+              author: message.author?.username,
+              authorId: message.author?.id,
+              isBot: message.author?.bot || false,
+              timestamp: new Date().toISOString(),
+              guildId: message.guildId,
+              guildName: message.guild?.name,
+              channelName: (message.channel as TextChannel).name
+            }
+          }));
         }
       }
     });
