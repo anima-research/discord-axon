@@ -5,41 +5,14 @@
  * Handles message triggers and agent activation based on configurable rules.
  */
 
-// Import types - these will be resolved at transpilation time
-declare interface IInteractiveComponent {
-  addOperation(operation: any): void;
-  trackPropertyChange(propertyName: string, oldValue: any, newValue: any): void;
-  setTrackedProperty<K extends keyof any>(key: K, value: any): void;
-  addFacet(facetDef: any): void;
-  updateState(facetId: string, updates: any, updateMode?: string): void;
-  registerAction(name: string, handler: (params?: any) => Promise<void>): void;
-  element: any;
-}
-
-declare interface ISpaceEvent<T = unknown> {
-  topic: string;
-  source: any;
-  payload: T;
-  timestamp: number;
-}
-
-declare interface IPersistentMetadata {
-  propertyKey: string;
-  version?: number;
-}
-
-declare interface IExternalMetadata {
-  propertyKey: string;
-  resourceId: string;
-}
-
-declare interface IAxonEnvironment {
-  InteractiveComponent: abstract new() => IInteractiveComponent;
-  persistent: (target: any, propertyKey: string) => void;
-  persistable: (version: number) => (target: any) => void;
-  external: (resourceId: string) => (target: any, propertyKey: string) => void;
-  WebSocket?: any;
-}
+// Import shared AXON types
+import type { 
+  IInteractiveComponent, 
+  ISpaceEvent, 
+  IPersistentMetadata, 
+  IExternalMetadata, 
+  IAxonEnvironment 
+} from '../shared/axon-types';
 
 interface TriggerConfig {
   mentions: boolean;          // Respond to @mentions

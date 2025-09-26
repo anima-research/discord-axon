@@ -5,40 +5,15 @@
  * Instead, it receives everything it needs through the environment.
  */
 
-// Import types - these will be resolved at transpilation time
-declare interface IInteractiveComponent {
-  addOperation(operation: any): void;
-  trackPropertyChange(propertyName: string, oldValue: any, newValue: any): void;
-  setTrackedProperty<K extends keyof any>(key: K, value: any): void;
-  addFacet(facetDef: any): void;
-  updateState(facetId: string, updates: any, updateMode?: string): void;
-  registerAction(name: string, handler: (params?: any) => Promise<void>): void;
-  element: any;
-}
-
-declare interface ISpaceEvent<T = unknown> {
-  topic: string;
-  source: any;
-  payload: T;
-  timestamp: number;
-}
-
-declare interface IPersistentMetadata {
-  propertyKey: string;
-  version?: number;
-}
-
-declare interface IExternalMetadata {
-  propertyKey: string;
-  resourceId: string;
-}
-
-declare interface IAxonEnvironment {
-  InteractiveComponent: abstract new() => IInteractiveComponent;
-  persistent: (target: any, propertyKey: string) => void;
-  external: (resourceId: string) => (target: any, propertyKey: string) => void;
-  WebSocket?: any;
-}
+// Import shared AXON types
+// Note: These are resolved at transpilation time from the shared location
+import type { 
+  IInteractiveComponent, 
+  ISpaceEvent, 
+  IPersistentMetadata, 
+  IExternalMetadata, 
+  IAxonEnvironment 
+} from '../shared/axon-types';
 
 interface DiscordConnectionParams {
   host: string;
@@ -601,6 +576,7 @@ export function createModule(env: IAxonEnvironment): typeof env.InteractiveCompo
         });
         
         // Add a history event facet
+        // Note: We still use addFacet for complex structures with children
         this.addFacet({
           id: `discord-history-${channelId}-${Date.now()}`,
           type: 'event',
@@ -613,19 +589,19 @@ export function createModule(env: IAxonEnvironment): typeof env.InteractiveCompo
             guildId: this.guildId
           },
           children: messages.map((message: DiscordMessage) => ({
-          id: `discord-msg-${message.messageId}`,
-          type: 'event',
-          displayName: 'discord-message',
-          content: `${message.author}: ${message.content}`,
-          attributes: {
-            channelId: message.channelId,
-            messageId: message.messageId,
-            author: message.author,
-            content: message.content,
-            timestamp: message.timestamp,
-            guildId: this.guildId
-          }
-        }))
+            id: `discord-msg-${message.messageId}`,
+            type: 'event',
+            displayName: 'discord-message',
+            content: `${message.author}: ${message.content}`,
+            attributes: {
+              channelId: message.channelId,
+              messageId: message.messageId,
+              author: message.author,
+              content: message.content,
+              timestamp: message.timestamp,
+              guildId: this.guildId
+            }
+          }))
         });
       } else {
         console.log(`[Discord] No new messages to add after deduplication`);
@@ -726,13 +702,12 @@ export function createModule(env: IAxonEnvironment): typeof env.InteractiveCompo
         timestamp: Date.now()
       });
       
-      // Add message facet
-      this.addFacet({
-        id: `discord-msg-${msg.messageId}`,
-        type: 'event',
-        displayName: 'discord-message',
-        content: `${msg.author}: ${msg.content}`,
-        attributes: {
+      // Add message facet using the helper method
+      this.addEvent(
+        'discord-message',
+        `${msg.author}: ${msg.content}`,
+        `discord-msg-${msg.messageId}`, // Stable ID
+        {
           channelId: msg.channelId,
           channelName: msg.channelName,
           messageId: msg.messageId,
@@ -744,7 +719,7 @@ export function createModule(env: IAxonEnvironment): typeof env.InteractiveCompo
           streamId,
           streamType: 'discord'
         }
-      });
+      );
       
       // Update last read
       this.lastRead[msg.channelId] = msg.messageId;
@@ -839,11 +814,10 @@ export function createModule(env: IAxonEnvironment): typeof env.InteractiveCompo
       this.lastError = error;
     }
     
-    // Only update VEIL state if we're in a frame
-    const space = this.element?.space;
-    if (space && (space as any).getCurrentFrame && (space as any).getCurrentFrame()) {
-      // Update or create connection state facet
-      this.updateState('discord-connection', {
+    // Use our helper method to safely update state
+    if (this.inFrame()) {
+      // changeState will create the facet if it doesn't exist or update if it does
+      this.changeState('discord-connection', {
         content: `Discord: ${state}${error ? ` - ${error}` : ''}`,
         attributes: {
           state,
@@ -891,14 +865,13 @@ export function createModule(env: IAxonEnvironment): typeof env.InteractiveCompo
         this.joinedChannels.push(channelId);
       }
       
-      // Add join event
-      this.addFacet({
-        id: `discord-join-${channelId}-${Date.now()}`,
-        type: 'event',
-        displayName: 'channel-join',
-        content: `Joined channel ${channelId}`,
-        attributes: { channelId }
-      });
+      // Add join event using helper method
+      this.addEvent(
+        'channel-join',
+        `Joined channel ${channelId}`,
+        `discord-join-${channelId}-${Date.now()}`,
+        { channelId }
+      );
     }
     
     async leave(params: { channelId: string }): Promise<void> {
@@ -917,14 +890,13 @@ export function createModule(env: IAxonEnvironment): typeof env.InteractiveCompo
       
       this.joinedChannels = this.joinedChannels.filter(id => id !== channelId);
       
-      // Add leave event
-      this.addFacet({
-        id: `discord-leave-${channelId}-${Date.now()}`,
-        type: 'event',
-        displayName: 'channel-leave',
-        content: `Left channel ${channelId}`,
-        attributes: { channelId }
-      });
+      // Add leave event using helper method
+      this.addEvent(
+        'channel-leave',
+        `Left channel ${channelId}`,
+        `discord-leave-${channelId}-${Date.now()}`,
+        { channelId }
+      );
     }
     
     async send(params: { channelId: string; message: string }): Promise<void> {
