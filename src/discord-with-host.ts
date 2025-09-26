@@ -116,22 +116,8 @@ Be friendly, helpful, and engaging!`,
   try {
     const space = await host.start(app);
     
-    // Create Discord control panel element
-    console.log('📋 Creating Discord control panel...');
-    
-    // Import required classes
-    const { Element } = await import('connectome-ts/src/spaces/element');
-    const { AxonLoaderComponent } = await import('connectome-ts/src/components/axon-loader');
-    
-    const controlElement = new Element('discord-control', 'Discord Control Panel');
-    const loader = new AxonLoaderComponent();
-    await controlElement.addComponentAsync(loader);
-    
-    // Add to space
-    space.addChild(controlElement);
-    
-    // Connect to the control panel module
-    await loader.connect('axon://localhost:8080/modules/discord-control-panel/manifest');
+    // Control panel is now created by the DiscordApplication during initialization
+    // No need to create it here anymore
     
     console.log('\n📡 Discord bot is running!');
     console.log(`🔧 Debug interface: http://localhost:${debugPort}`);

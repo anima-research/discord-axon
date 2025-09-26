@@ -122,9 +122,6 @@ export function createModule(env: IAxonEnvironment): typeof env.InteractiveCompo
     private shouldConnectOnNextFrame: boolean = false;
     private pendingMessages: any[] = [];
     
-    // Track message IDs by channel for deletion detection
-    @persistent
-    private channelMessages: Record<string, string[]> = {};
     
     // Static metadata for persistence
     static persistentProperties: IPersistentMetadata[] = [
@@ -140,8 +137,7 @@ export function createModule(env: IAxonEnvironment): typeof env.InteractiveCompo
       { propertyKey: 'joinedChannels' },
       { propertyKey: 'channelNames' },
       { propertyKey: 'lastRead' },
-      { propertyKey: 'scrollbackLimit' },
-      { propertyKey: 'channelMessages' }
+      { propertyKey: 'scrollbackLimit' }
     ];
     
     static externalResources: IExternalMetadata[] = [
@@ -239,6 +235,8 @@ export function createModule(env: IAxonEnvironment): typeof env.InteractiveCompo
     async handleEvent(event: ISpaceEvent): Promise<void> {
       // No super.handleEvent() - IInteractiveComponent doesn't have this method
       
+      console.log(`[Discord] handleEvent called with topic: ${event.topic}`);
+      
       if (event.topic === 'frame:start') {
         // Process any pending messages
         if (this.pendingMessages.length > 0) {
@@ -269,15 +267,29 @@ export function createModule(env: IAxonEnvironment): typeof env.InteractiveCompo
     onReferencesResolved(): void {
       console.log('🔌 Discord onReferencesResolved - token:', this.botToken ? 'SET' : 'NOT SET', 'serverUrl:', this.serverUrl);
       
-      if (this.serverUrl && this.botToken) {
-        console.log('🔌 Discord will connect on next frame now that references are resolved');
+      if (this.serverUrl && this.botToken && this.connectionState === 'disconnected') {
+        // Emit an event to ensure we get a frame:start event to trigger connection
+        console.log('🔌 Discord emitting event to trigger frame after references resolved');
         this.shouldConnectOnNextFrame = true;
+        
+        // Emit a low-priority event that will trigger a frame
+        this.element.emit({
+          topic: 'discord:ready-to-connect',
+          source: {
+            elementId: this.element.id,
+            elementPath: [this.element.name],
+            elementType: 'Element'
+          },
+          payload: {},
+          timestamp: Date.now(),
+          priority: 'low'
+        });
       }
     }
     
     private async startConnection(): Promise<void> {
       if (this.serverUrl && this.botToken) {
-        console.log('[Discord] Starting connection on frame:start after references resolved');
+        console.log('[Discord] Starting connection after references resolved');
         await this.connect();
       }
     }
@@ -505,51 +517,6 @@ export function createModule(env: IAxonEnvironment): typeof env.InteractiveCompo
         this.channelNames[channelId] = channelName;
       }
       
-      // Detect deleted messages (only if we have existing messages tracked)
-      if (this.channelMessages[channelId] && this.channelMessages[channelId].length > 0) {
-        const receivedMessageIds = new Set(messages.map((m: any) => m.messageId));
-        const deletedMessageIds = this.channelMessages[channelId].filter(id => !receivedMessageIds.has(id));
-        
-        if (deletedMessageIds.length > 0) {
-          console.log(`[Discord] Detected ${deletedMessageIds.length} deleted messages in channel ${channelId}`);
-          
-          // Mark deleted messages
-          for (const messageId of deletedMessageIds) {
-            const facetId = `discord-msg-${messageId}`;
-            const streamId = this.buildStreamId(channelName, guildName || this.guildName);
-            
-            // Emit delete event for each deleted message
-            this.element.emit({
-              topic: 'discord:messageDelete',
-              payload: {
-                channelId,
-                messageId,
-                timestamp: new Date().toISOString(),
-                guildId: this.guildId,
-                guildName: guildName || this.guildName,
-                channelName,
-                streamId,
-                streamType: 'discord',
-                facetId,
-                detectedOnReconnect: true
-              },
-              timestamp: Date.now()
-            });
-            
-            // Update the facet to mark as deleted
-            this.updateState(facetId, {
-              attributes: {
-                deleted: true,
-                deletedAt: new Date().toISOString(),
-                detectedOnReconnect: true
-              }
-            });
-          }
-          
-          // Update our tracking to remove deleted messages
-          this.channelMessages[channelId] = this.channelMessages[channelId].filter(id => receivedMessageIds.has(id));
-        }
-      }
       
       // Filter out messages we've already seen
       const lastReadId = this.lastRead[channelId];
@@ -571,6 +538,52 @@ export function createModule(env: IAxonEnvironment): typeof env.InteractiveCompo
           console.log(`[Discord] Filtered out ${originalCount - messages.length} already-read messages (older than ${lastReadId}), keeping ${messages.length} new messages`);
         } else {
           console.log(`[Discord] No messages filtered - all ${messages.length} messages are new (newer than ${lastReadId})`);
+        }
+      }
+      
+      // Additional deduplication: Check if messages already exist in VEIL
+      console.log(`[Discord] Deduplication check: Checking ${messages.length} messages against VEIL state`);
+      const veilState = this.element?.space?.veilState?.getState();
+      console.log(`[Discord] VEIL state available: ${!!veilState}, element available: ${!!this.element}, space available: ${!!this.element?.space}`);
+      if (veilState && messages.length > 0) {
+        const originalCount = messages.length;
+        
+        // Get all existing message IDs from VEIL for this channel
+        const existingMessageIds = new Set<string>();
+        console.log(`[Discord] VEIL facets type: ${typeof veilState.facets}, is Map: ${veilState.facets instanceof Map}`);
+        
+        // veilState.facets is an object, not a Map
+        for (const [facetId, facet] of Object.entries(veilState.facets)) {
+          const typedFacet = facet as any;
+          if (facetId.startsWith('discord-msg-') && 
+              typedFacet.attributes?.channelId === channelId &&
+              typedFacet.attributes?.messageId) {
+            existingMessageIds.add(typedFacet.attributes.messageId);
+          }
+        }
+        
+        // Also check in any existing history event children
+        for (const [facetId, facet] of Object.entries(veilState.facets)) {
+          const typedFacet = facet as any;
+          if (facetId.startsWith('discord-history-') && 
+              typedFacet.attributes?.channelId === channelId &&
+              typedFacet.children) {
+            for (const child of typedFacet.children) {
+              if (child.attributes?.messageId) {
+                existingMessageIds.add(child.attributes.messageId);
+              }
+            }
+          }
+        }
+        
+        if (existingMessageIds.size > 0) {
+          // Filter out messages that already exist in VEIL
+          messages = messages.filter((m: DiscordMessage) => !existingMessageIds.has(m.messageId));
+          
+          const deduped = originalCount - messages.length;
+          if (deduped > 0) {
+            console.log(`[Discord] Deduplication: Filtered out ${deduped} messages already in VEIL, keeping ${messages.length} truly new messages`);
+          }
         }
       }
       
@@ -614,26 +627,54 @@ export function createModule(env: IAxonEnvironment): typeof env.InteractiveCompo
           }
         }))
         });
+      } else {
+        console.log(`[Discord] No new messages to add after deduplication`);
       }
       
-      // Update last read for the channel (after filtering)
-      if (messages.length > 0) {
-        const lastMessage = messages[messages.length - 1];
+      // Update last read for the channel based on original messages from Discord
+      // (before any filtering) to ensure we track the actual last message
+      if (msg.messages && msg.messages.length > 0) {
+        const originalMessages = msg.messages;
+        const lastMessage = originalMessages[originalMessages.length - 1];
         this.lastRead[channelId] = lastMessage.messageId;
         console.log(`[Discord] Updated lastRead for ${channelId} to ${lastMessage.messageId}`);
-        
-        // Check for deleted messages if we have tracked messages for this channel
-        if (this.channelMessages[channelId] && this.channelMessages[channelId].length > 0) {
+      }
+      
+      // Check for deleted messages by comparing with existing facets in VEIL
+      if (messages.length > 0) {
+        const veilState = this.element?.space?.veilState?.getState();
+        if (veilState) {
           const receivedMessageIds = new Set(messages.map((m: DiscordMessage) => m.messageId));
-          const deletedMessages = this.channelMessages[channelId].filter(id => !receivedMessageIds.has(id));
+          const existingFacets = veilState.facets;
+          
+          console.log(`[Discord] Checking for deleted messages in channel ${channelId}`);
+          console.log(`[Discord] Received ${messages.length} messages from history`);
+          console.log(`[Discord] Total facets in VEIL: ${existingFacets.size}`);
+          
+          // Find all message facets for this channel that aren't deleted
+          const existingMessageIds: string[] = [];
+          for (const [facetId, facet] of existingFacets) {
+            if (facetId.startsWith('discord-msg-') && 
+                facet.attributes?.channelId === channelId &&
+                !facet.attributes?.deleted) {
+              const messageId = facet.attributes?.messageId;
+              if (messageId) {
+                existingMessageIds.push(messageId);
+              }
+            }
+          }
+          
+          console.log(`[Discord] Found ${existingMessageIds.length} existing messages in VEIL for this channel`);
+          console.log(`[Discord] Existing message IDs:`, existingMessageIds);
+          
+          // Find messages that exist in VEIL but not in the received history
+          const deletedMessages = existingMessageIds.filter(id => !receivedMessageIds.has(id));
           
           if (deletedMessages.length > 0) {
-            console.log(`[Discord] Detected ${deletedMessages.length} deleted messages in channel ${channelId}`);
+            console.log(`[Discord] Detected ${deletedMessages.length} deleted messages in channel ${channelId}: ${deletedMessages.join(', ')}`);
             
-            // Mark deleted messages
+            // Emit deletion events for each deleted message
             for (const messageId of deletedMessages) {
-              const facetId = `discord-msg-${messageId}`;
-              // Emit deletion event
               this.element.emit({
                 topic: 'discord:messageDelete',
                 payload: {
@@ -643,14 +684,12 @@ export function createModule(env: IAxonEnvironment): typeof env.InteractiveCompo
                 }
               });
             }
+          } else {
+            console.log(`[Discord] No deleted messages detected`);
           }
+        } else {
+          console.log(`[Discord] No VEIL state available for deletion detection`);
         }
-        
-        // Update tracked message IDs
-        if (!this.channelMessages[channelId]) {
-          this.channelMessages[channelId] = [];
-        }
-        this.channelMessages[channelId] = messages.map((m: DiscordMessage) => m.messageId);
       }
     }
     
@@ -706,12 +745,6 @@ export function createModule(env: IAxonEnvironment): typeof env.InteractiveCompo
           streamType: 'discord'
         }
       });
-      
-      // Track message ID for this channel
-      if (!this.channelMessages[msg.channelId]) {
-        this.channelMessages[msg.channelId] = [];
-      }
-      this.channelMessages[msg.channelId].push(msg.messageId);
       
       // Update last read
       this.lastRead[msg.channelId] = msg.messageId;
@@ -798,14 +831,6 @@ export function createModule(env: IAxonEnvironment): typeof env.InteractiveCompo
           }
         }
       });
-      
-      // Remove from channel messages tracking
-      if (this.channelMessages[channelId]) {
-        const index = this.channelMessages[channelId].indexOf(messageId);
-        if (index > -1) {
-          this.channelMessages[channelId].splice(index, 1);
-        }
-      }
     }
     
   private setConnectionState(state: typeof this.connectionState, error?: string): void {
