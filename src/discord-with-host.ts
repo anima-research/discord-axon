@@ -109,9 +109,9 @@ Be friendly, helpful, and engaging!`,
     llmProviderId: 'provider:llm.primary',
     discord: {
       host: 'localhost:8081',
-      guild: guildId || '1289595876716707911',  // Fallback to test guild if not configured
+      guild: guildId || '',
       modulePort: 8080,  // The Discord AXON server runs module serving on 8080
-      autoJoinChannels: channelId ? [channelId] : ['1289595876716707914']  // Use configured channel or fallback
+      autoJoinChannels: channelId ? [channelId] : []
     }
   });
   

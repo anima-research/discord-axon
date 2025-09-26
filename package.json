@@ -24,6 +24,7 @@
   "author": "Connectome Team",
   "license": "MIT",
   "dependencies": {
+    "@connectome/axon-interfaces": "file:../connectome-axon-interfaces",
     "@connectome/axon-server": "file:../axon-server",
     "connectome-ts": "file:../connectome-ts",
     "discord.js": "^14.16.3",

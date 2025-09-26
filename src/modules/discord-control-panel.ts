@@ -4,14 +4,14 @@
  * Provides UI and actions for managing Discord server/channel connections
  */
 
-// Import shared AXON types
+// Import shared AXON types from the centralized package
 import type { 
   IInteractiveComponent, 
   ISpaceEvent, 
   IPersistentMetadata, 
   IExternalMetadata, 
   IAxonEnvironment 
-} from '../shared/axon-types';
+} from '@connectome/axon-interfaces';
 
 // Guild and channel info types
 interface GuildInfo {

@@ -5,14 +5,14 @@
  * Handles message triggers and agent activation based on configurable rules.
  */
 
-// Import shared AXON types
+// Import shared AXON types from the centralized package
 import type { 
   IInteractiveComponent, 
   ISpaceEvent, 
   IPersistentMetadata, 
   IExternalMetadata, 
   IAxonEnvironment 
-} from '../shared/axon-types';
+} from '@connectome/axon-interfaces';
 
 interface TriggerConfig {
   mentions: boolean;          // Respond to @mentions

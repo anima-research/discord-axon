@@ -5,15 +5,14 @@
  * Instead, it receives everything it needs through the environment.
  */
 
-// Import shared AXON types
-// Note: These are resolved at transpilation time from the shared location
+// Import shared AXON types from the centralized package
 import type { 
   IInteractiveComponent, 
   ISpaceEvent, 
   IPersistentMetadata, 
   IExternalMetadata, 
   IAxonEnvironment 
-} from '../shared/axon-types';
+} from '@connectome/axon-interfaces';
 
 interface DiscordConnectionParams {
   host: string;
@@ -250,11 +249,6 @@ export function createModule(env: IAxonEnvironment): typeof env.InteractiveCompo
         // Emit a low-priority event that will trigger a frame
         this.element.emit({
           topic: 'discord:ready-to-connect',
-          source: {
-            elementId: this.element.id,
-            elementPath: [this.element.name],
-            elementType: 'Element'
-          },
           payload: {},
           timestamp: Date.now(),
           priority: 'low'
@@ -657,7 +651,8 @@ export function createModule(env: IAxonEnvironment): typeof env.InteractiveCompo
                   messageId,
                   channelId,
                   timestamp: new Date().toISOString()
-                }
+                },
+                timestamp: Date.now()
               });
             }
           } else {
