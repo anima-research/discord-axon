@@ -4,6 +4,8 @@ import yaml from 'js-yaml';
 
 export interface DiscordConfig {
   botToken: string;
+  guildId?: string;
+  channelId?: string;
   httpPort?: number;
   wsPort?: number;
   modulePort?: number;
@@ -15,6 +17,8 @@ export function loadConfig(): DiscordConfig {
   if (process.env.DISCORD_BOT_TOKEN) {
     return {
       botToken: process.env.DISCORD_BOT_TOKEN,
+      guildId: process.env.DISCORD_GUILD_ID,
+      channelId: process.env.DISCORD_CHANNEL_ID,
       httpPort: parseInt(process.env.HTTP_PORT || '8080'),
       wsPort: parseInt(process.env.WS_PORT || '8081'),
       modulePort: parseInt(process.env.MODULE_PORT || '8082'),
@@ -38,6 +42,8 @@ export function loadConfig(): DiscordConfig {
         if (config.discord?.botToken) {
           return {
             botToken: config.discord.botToken,
+            guildId: config.discord.guildId || config.adapter?.guild,
+            channelId: config.discord.channelId || config.adapter?.channel,
             httpPort: config.discord.httpPort || 8080,
             wsPort: config.discord.wsPort || 8081,
             modulePort: config.discord.modulePort || 8082,
@@ -49,6 +55,8 @@ export function loadConfig(): DiscordConfig {
         if (config.adapter?.bot_token) {
           return {
             botToken: config.adapter.bot_token,
+            guildId: config.adapter?.guild,
+            channelId: config.adapter?.channel,
             httpPort: config.discord?.httpPort || 8080,
             wsPort: config.discord?.wsPort || 8081,
             modulePort: config.discord?.modulePort || 8082,

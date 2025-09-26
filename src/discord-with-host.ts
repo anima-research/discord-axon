@@ -8,6 +8,7 @@
  * and the application just defines the business logic.
  */
 
+import { config as dotenvConfig } from 'dotenv';
 import { ConnectomeHost } from 'connectome-ts/src/host';
 import { DiscordApplication } from './discord-app';
 import { AnthropicProvider } from 'connectome-ts/src/llm/anthropic-provider';
@@ -16,6 +17,7 @@ import { DebugLLMProvider } from 'connectome-ts/src/llm/debug-llm-provider';
 import { join } from 'path';
 import * as yaml from 'js-yaml';
 import * as fs from 'fs';
+import { loadConfig } from './config';
 
 async function main() {
   console.log('🤖 Connectome Discord Bot with Host Architecture');
@@ -31,11 +33,12 @@ async function main() {
     console.log('🔄 Reset flag detected - starting fresh\n');
   }
   
-  // Load Discord config
-  const configPath = join(__dirname, '../config.yaml');
-  const config = yaml.load(fs.readFileSync(configPath, 'utf8')) as any;
-  const { bot_token: botToken, application_id: applicationId } = config.adapter;
-  const guildId = config.adapter.guild || '1289595876716707911'; // Your test guild
+  // Load environment variables from .env file
+  dotenvConfig();
+  
+  // Load Discord config (from env vars or config.yaml)
+  const discordConfig = loadConfig();
+  const { botToken, guildId, channelId } = discordConfig;
   
   // Create LLM provider
   let llmProvider;
@@ -91,7 +94,7 @@ async function main() {
     },
     providers,
     secrets: {
-      'discord.token': botToken
+      'discord.token': discordConfig.botToken
     },
     reset
   });
@@ -106,9 +109,9 @@ Be friendly, helpful, and engaging!`,
     llmProviderId: 'provider:llm.primary',
     discord: {
       host: 'localhost:8081',
-      guild: guildId,
+      guild: guildId || '1289595876716707911',  // Fallback to test guild if not configured
       modulePort: 8080,  // The Discord AXON server runs module serving on 8080
-      autoJoinChannels: ['1289595876716707914']  // #general channel ID
+      autoJoinChannels: channelId ? [channelId] : ['1289595876716707914']  // Use configured channel or fallback
     }
   });
   
