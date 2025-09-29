@@ -310,8 +310,7 @@ export function createModule(env: IAxonEnvironment): any {
         if (!this.messageUpdateSettings.preserveDeletedFacets && facetId) {
           this.addOperation({
             type: 'removeFacet',
-            facetId,
-            mode: 'delete'
+            id: facetId
           });
         }
       }
@@ -319,28 +318,39 @@ export function createModule(env: IAxonEnvironment): any {
       // Handle agent frame ready events
       if (event.topic === 'agent:frame-ready') {
         const { frame } = event.payload as any;
-        console.log(`[DiscordChat] Agent frame ready with ${frame.operations?.length || 0} operations`);
-        
-        // Look for speak operations
-        if (frame.operations) {
-          for (const op of frame.operations) {
-            if (op.type === 'speak') {
-              console.log(`[DiscordChat] Found speak operation: "${op.content}"`);
-              
-              // Check if speak operation targets our stream or no target (default routing)
-              const shouldSend = !op.target || 
-                (op.target === this.lastActiveStream?.streamId) ||
-                (op.target && op.target.startsWith('discord:') && this.lastActiveStream);
-              
-              if (shouldSend && this.lastActiveStream?.channelId) {
-                console.log(`[DiscordChat] Sending to Discord channel via stream ${this.lastActiveStream.streamId}`);
-                await (this as any).send({ 
-                  channelId: this.lastActiveStream.channelId, 
-                  message: op.content 
-                });
-              } else if (shouldSend) {
-                console.warn('[DiscordChat] No active stream to send agent response to.');
-              }
+        const deltas = Array.isArray(frame?.deltas) ? frame.deltas : [];
+        console.log(`[DiscordChat] Agent frame ready with ${deltas.length} deltas`);
+
+        for (const delta of deltas) {
+          if (delta?.type !== 'addFacet') {
+            continue;
+          }
+
+          const facet = delta.facet as any;
+          if (!facet || typeof facet !== 'object') {
+            continue;
+          }
+
+          if (facet.type === 'speech' && typeof facet.content === 'string') {
+            console.log(`[DiscordChat] Found speech facet: "${facet.content}"`);
+
+            const targetStreamId = facet.streamId ?? this.lastActiveStream?.streamId;
+            const isDiscordTarget = targetStreamId?.startsWith('discord:');
+            const shouldSend = !targetStreamId ||
+              (targetStreamId === this.lastActiveStream?.streamId) ||
+              (isDiscordTarget && this.lastActiveStream);
+
+            if (shouldSend && this.lastActiveStream?.channelId) {
+              console.log(`[DiscordChat] Sending to Discord channel via stream ${this.lastActiveStream.streamId}`);
+              await (this as any).send({
+                channelId: this.lastActiveStream.channelId,
+                message: facet.content
+              });
+            } else if (shouldSend) {
+              console.warn('[DiscordChat] No active stream to send agent response to.', {
+                targetStreamId,
+                lastActiveStream: this.lastActiveStream
+              });
             }
           }
         }

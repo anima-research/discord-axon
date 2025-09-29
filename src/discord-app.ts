@@ -137,32 +137,32 @@ export class DiscordApplication implements ConnectomeApplication {
       }
     } else {
       console.log('🆕 Creating new Discord element');
-      // Create Discord element with AxonLoaderComponent
+    // Create Discord element with AxonLoaderComponent
       discordElem = new Element('discord', 'discord');
-      const axonLoader = new AxonLoaderComponent();
-      
-      // Build the AXON URL with connection parameters
+    const axonLoader = new AxonLoaderComponent();
+    
+    // Build the AXON URL with connection parameters
       // Default to module server port (8080)
       const modulePort = this.config.discord.modulePort || 8080;
-      const axonUrl = `axon://localhost:${modulePort}/modules/discord-chat/manifest?` + 
-        `host=${encodeURIComponent(this.config.discord.host)}&` +
-        `path=${encodeURIComponent('/ws')}&` +
-        `guild=${encodeURIComponent(this.config.discord.guild)}&` +
-        `agent=${encodeURIComponent(this.config.agentName)}&` +
-        // Chat trigger configuration
-        `mentions=true&` +
-        `directMessages=true&` +
-        `keywords=${encodeURIComponent('hi,hello,help,?,connectome')}&` +
-        `cooldown=0`;
-      
-      // Add Discord element to space first
-      space.addChild(discordElem);
-      
-      // Add the component and wait for it to mount
-      await discordElem.addComponentAsync(axonLoader);
-      
-      // Connect to the AXON component server
-      await axonLoader.connect(axonUrl);
+    const axonUrl = `axon://localhost:${modulePort}/modules/discord-chat/manifest?` + 
+      `host=${encodeURIComponent(this.config.discord.host)}&` +
+      `path=${encodeURIComponent('/ws')}&` +
+      `guild=${encodeURIComponent(this.config.discord.guild)}&` +
+      `agent=${encodeURIComponent(this.config.agentName)}&` +
+      // Chat trigger configuration
+      `mentions=true&` +
+      `directMessages=true&` +
+      `keywords=${encodeURIComponent('hi,hello,help,?,connectome')}&` +
+      `cooldown=0`;
+    
+    // Add Discord element to space first
+    space.addChild(discordElem);
+    
+    // Add the component and wait for it to mount
+    await discordElem.addComponentAsync(axonLoader);
+    
+    // Connect to the AXON component server
+    await axonLoader.connect(axonUrl);
     }
     
     // Check if agent element already exists (from persistence)
@@ -186,21 +186,21 @@ export class DiscordApplication implements ConnectomeApplication {
       console.log('🆕 Creating new agent element');
       // Create agent element
       agentElem = new Element('discord-agent');
-      
-      // Create agent component without agent (will be created after references are resolved)
-      const agentComponent = new AgentComponent();
-      
-      // Store config for agent creation
-      const agentConfig = {
-        name: this.config.agentName,
-        systemPrompt: this.config.systemPrompt,
-        autoActionRegistration: true
-      };
-      
-      // Save config for restoration
-      (agentComponent as any).agentConfig = agentConfig;
-      
-      agentElem.addComponent(agentComponent);
+    
+    // Create agent component without agent (will be created after references are resolved)
+    const agentComponent = new AgentComponent();
+    
+    // Store config for agent creation
+    const agentConfig = {
+      name: this.config.agentName,
+      systemPrompt: this.config.systemPrompt,
+      autoActionRegistration: true
+    };
+    
+    // Save config for restoration
+    (agentComponent as any).agentConfig = agentConfig;
+    
+    agentElem.addComponent(agentComponent);
     }
     
     // Add auto-join component for testing (if not already present)
@@ -209,14 +209,14 @@ export class DiscordApplication implements ConnectomeApplication {
       
       if (!hasAutoJoin) {
         console.log('➕ Adding auto-join component');
-        const autoJoinComponent = new DiscordAutoJoinComponent(this.config.discord.autoJoinChannels);
-        agentElem.addComponent(autoJoinComponent);
+      const autoJoinComponent = new DiscordAutoJoinComponent(this.config.discord.autoJoinChannels);
+      agentElem.addComponent(autoJoinComponent);
       }
     }
     
     // Add agent element to space only if it's a new element
     if (!space.children.includes(agentElem)) {
-      space.addChild(agentElem);
+    space.addChild(agentElem);
     }
     
     // Subscribe to agent response events

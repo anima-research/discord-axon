@@ -67,7 +67,36 @@ export function createModule(env: IAxonEnvironment): typeof env.InteractiveCompo
     
     @persistent
     private showCategories: boolean = true;
-    
+
+    private emitControlEvent(
+      id: string,
+      content: string,
+      eventType: string,
+      metadata: Record<string, any> = {}
+    ): void {
+      this.addEvent(
+        content,
+        eventType,
+        id,
+        {
+          streamId: 'discord:control',
+          streamType: 'discord',
+          ...metadata
+        }
+      );
+    }
+
+    private emitControlError(
+      id: string,
+      message: string,
+      metadata: Record<string, any> = {}
+    ): void {
+      this.emitControlEvent(id, message, 'discord-control:error', {
+        severity: 'error',
+        ...metadata
+      });
+    }
+
     // Static metadata for persistence
     static persistentProperties: IPersistentMetadata[] = [
       { propertyKey: 'availableGuilds' },
@@ -99,29 +128,21 @@ export function createModule(env: IAxonEnvironment): typeof env.InteractiveCompo
       this.registerAction('listChannels', async (params) => {
         const serverName = params?.serverName || this.getSelectedServerName();
         if (!serverName) {
-          this.addOperation({
-            type: 'addFacet',
-            facet: {
-              id: 'discord-error-no-server',
-              type: 'error',
-              content: 'No server selected. Use listServers first.',
-              ttl: 5000
-            }
-          });
+          this.emitControlError(
+            'discord-error-no-server',
+            'No server selected. Use listServers first.',
+            { ttl: 5000 }
+          );
           return;
         }
-        
+
         const guild = this.findGuildByName(serverName);
         if (!guild) {
-          this.addOperation({
-            type: 'addFacet',
-            facet: {
-              id: 'discord-error-unknown-server',
-              type: 'error',
-              content: `Unknown server: ${serverName}`,
-              ttl: 5000
-            }
-          });
+          this.emitControlError(
+            'discord-error-unknown-server',
+            `Unknown server: ${serverName}`,
+            { ttl: 5000 }
+          );
           return;
         }
         
@@ -130,43 +151,31 @@ export function createModule(env: IAxonEnvironment): typeof env.InteractiveCompo
       
       this.registerAction('joinChannel', async (params) => {
         if (!params?.channelName) {
-          this.addOperation({
-            type: 'addFacet',
-            facet: {
-              id: 'discord-error-no-channel',
-              type: 'error',
-              content: 'No channel name provided',
-              ttl: 5000
-            }
-          });
+          this.emitControlError(
+            'discord-error-no-channel',
+            'No channel name provided',
+            { ttl: 5000 }
+          );
           return;
         }
-        
+
         const serverName = params.serverName || this.getSelectedServerName();
         if (!serverName) {
-          this.addOperation({
-            type: 'addFacet',
-            facet: {
-              id: 'discord-error-no-server-join',
-              type: 'error',
-              content: 'No server specified. Provide serverName or select a server first.',
-              ttl: 5000
-            }
-          });
+          this.emitControlError(
+            'discord-error-no-server-join',
+            'No server specified. Provide serverName or select a server first.',
+            { ttl: 5000 }
+          );
           return;
         }
-        
+
         const channel = this.findChannelByName(params.channelName, serverName);
         if (!channel) {
-          this.addOperation({
-            type: 'addFacet',
-            facet: {
-              id: 'discord-error-unknown-channel',
-              type: 'error',
-              content: `Channel #${params.channelName} not found in server ${serverName}`,
-              ttl: 5000
-            }
-          });
+          this.emitControlError(
+            'discord-error-unknown-channel',
+            `Channel #${params.channelName} not found in server ${serverName}`,
+            { ttl: 5000 }
+          );
           return;
         }
         
@@ -175,15 +184,11 @@ export function createModule(env: IAxonEnvironment): typeof env.InteractiveCompo
       
       this.registerAction('leaveChannel', async (params) => {
         if (!params?.channelName) {
-          this.addOperation({
-            type: 'addFacet',
-            facet: {
-              id: 'discord-error-no-channel-leave',
-              type: 'error',
-              content: 'No channel name provided',
-              ttl: 5000
-            }
-          });
+          this.emitControlError(
+            'discord-error-no-channel-leave',
+            'No channel name provided',
+            { ttl: 5000 }
+          );
           return;
         }
         
@@ -200,15 +205,11 @@ export function createModule(env: IAxonEnvironment): typeof env.InteractiveCompo
         }
         
         if (!targetChannel) {
-          this.addOperation({
-            type: 'addFacet',
-            facet: {
-              id: 'discord-error-not-in-channel',
-              type: 'error',
-              content: `Not in channel #${params.channelName}${params.serverName ? ` in ${params.serverName}` : ''}`,
-              ttl: 5000
-            }
-          });
+          this.emitControlError(
+            'discord-error-not-in-channel',
+            `Not in channel #${params.channelName}${params.serverName ? ` in ${params.serverName}` : ''}`,
+            { ttl: 5000 }
+          );
           return;
         }
         
@@ -227,43 +228,31 @@ export function createModule(env: IAxonEnvironment): typeof env.InteractiveCompo
         this.emitUsageInstructions();
         this.hasEmittedActions = true;
         
-        this.addOperation({
-          type: 'addFacet',
-          facet: {
-            id: 'discord-instructions-refreshed',
-            type: 'event',
-            displayName: 'Instructions Refreshed',
-            content: 'Discord control panel instructions have been refreshed',
-            ttl: 3000
-          }
-        });
+        this.emitControlEvent(
+          'discord-instructions-refreshed',
+          'Discord control panel instructions have been refreshed',
+          'discord-control:info',
+          { ttl: 3000 }
+        );
       });
       
       this.registerAction('selectServer', async (params) => {
         if (!params?.serverName) {
-          this.addOperation({
-            type: 'addFacet',
-            facet: {
-              id: 'discord-error-no-server-select',
-              type: 'error',
-              content: 'No server name provided',
-              ttl: 5000
-            }
-          });
+          this.emitControlError(
+            'discord-error-no-server-select',
+            'No server name provided',
+            { ttl: 5000 }
+          );
           return;
         }
-        
+
         const guild = this.findGuildByName(params.serverName);
         if (!guild) {
-          this.addOperation({
-            type: 'addFacet',
-            facet: {
-              id: 'discord-error-unknown-server-select',
-              type: 'error',
-              content: `Unknown server: ${params.serverName}`,
-              ttl: 5000
-            }
-          });
+          this.emitControlError(
+            'discord-error-unknown-server-select',
+            `Unknown server: ${params.serverName}`,
+            { ttl: 5000 }
+          );
           return;
         }
         
@@ -345,15 +334,11 @@ export function createModule(env: IAxonEnvironment): typeof env.InteractiveCompo
       // Find channel info
       const channel = this.findChannel(channelId);
       if (!channel) {
-        this.addOperation({
-          type: 'addFacet',
-          facet: {
-            id: 'discord-error-unknown-channel',
-            type: 'error',
-            content: `Unknown channel ID: ${channelId}`,
-            ttl: 5000
-          }
-        });
+        this.emitControlError(
+          'discord-error-unknown-channel',
+          `Unknown channel ID: ${channelId}`,
+          { ttl: 5000 }
+        );
         return;
       }
       
@@ -387,19 +372,17 @@ export function createModule(env: IAxonEnvironment): typeof env.InteractiveCompo
         return channel ? `${channel.guildName}:#${channel.name}` : channelId;
       });
       
-      this.addOperation({
-        type: 'addFacet',
-        facet: {
-          id: 'discord-joined-channels',
-          type: 'info',
-          displayName: 'Joined Channels',
-          content: joinedList.length > 0 
-            ? `Currently in: ${joinedList.join(', ')}`
-            : 'Not in any channels',
-          attributes: {
-            channels: Array.from(this.joinedChannels),
-            count: this.joinedChannels.size
-          }
+      this.addFacet({
+        id: 'discord-joined-channels',
+        type: 'state',
+        content: joinedList.length > 0
+          ? `Currently in: ${joinedList.join(', ')}`
+          : 'Not in any channels',
+        entityType: 'component',
+        entityId: this.element.id,
+        attributes: {
+          channels: Array.from(this.joinedChannels),
+          count: this.joinedChannels.size
         }
       });
     }
@@ -416,17 +399,15 @@ export function createModule(env: IAxonEnvironment): typeof env.InteractiveCompo
       this.createControlPanelFacet();
       
       // Create guild list facet
-      this.addOperation({
-        type: 'addFacet',
-        facet: {
-          id: 'discord-guilds-list',
-          type: 'resource',
-          displayName: 'Discord Servers',
-          content: this.formatGuildsList(),
-          attributes: {
-            guilds: payload.guilds,
-            count: payload.guilds.length
-          }
+      this.addFacet({
+        id: 'discord-guilds-list',
+        type: 'state',
+        content: this.formatGuildsList(),
+        entityType: 'component',
+        entityId: this.element.id,
+        attributes: {
+          guilds: payload.guilds,
+          count: payload.guilds.length
         }
       });
     }
@@ -444,19 +425,17 @@ export function createModule(env: IAxonEnvironment): typeof env.InteractiveCompo
       
       // Create channel list facet
       const guild = this.availableGuilds.find(g => g.id === payload.guildId);
-      this.addOperation({
-        type: 'addFacet',
-        facet: {
-          id: `discord-channels-${payload.guildId}`,
-          type: 'resource',
-          displayName: `Channels in ${guild?.name || payload.guildId}`,
-          content: this.formatChannelsList(payload.channels),
-          attributes: {
-            guildId: payload.guildId,
-            guildName: guild?.name,
-            channels: payload.channels,
-            count: payload.channels.length
-          }
+      this.addFacet({
+        id: `discord-channels-${payload.guildId}`,
+        type: 'state',
+        content: this.formatChannelsList(payload.channels),
+        entityType: 'component',
+        entityId: this.element.id,
+        attributes: {
+          guildId: payload.guildId,
+          guildName: guild?.name,
+          channels: payload.channels,
+          count: payload.channels.length
         }
       });
     }
@@ -467,26 +446,19 @@ export function createModule(env: IAxonEnvironment): typeof env.InteractiveCompo
         this.joinedChannels.add(payload.id);
         console.log(`[DiscordControlPanel] Successfully joined channel ${payload.id}`);
         
-        this.addOperation({
-          type: 'addFacet',
-          facet: {
-            id: `discord-joined-${payload.id}`,
-            type: 'event',
-            content: `Joined ${payload.guildName}:#${payload.name}`,
-            ttl: 5000
-          }
-        });
+        this.emitControlEvent(
+          `discord-joined-${payload.id}`,
+          `Joined ${payload.guildName}:#${payload.name}`,
+          'discord-control:status',
+          { ttl: 5000 }
+        );
       } else {
         console.error(`[DiscordControlPanel] Invalid channel joined payload:`, payload);
-        this.addOperation({
-          type: 'addFacet',
-          facet: {
-            id: `discord-join-error-invalid`,
-            type: 'error',
-            content: `Failed to join channel: Invalid payload received`,
-            ttl: 5000
-          }
-        });
+        this.emitControlError(
+          'discord-join-error-invalid',
+          'Failed to join channel: Invalid payload received',
+          { ttl: 5000 }
+        );
       }
       
       // Update UI
@@ -498,15 +470,12 @@ export function createModule(env: IAxonEnvironment): typeof env.InteractiveCompo
       console.log(`[DiscordControlPanel] Left channel ${payload.channelId}`);
       
       const channel = this.findChannel(payload.channelId);
-      this.addOperation({
-        type: 'addFacet',
-        facet: {
-          id: `discord-left-${payload.channelId}`,
-          type: 'info',
-          content: `Left ${channel ? `${channel.guildName}:#${channel.name}` : payload.channelId}`,
-          ttl: 5000
-        }
-      });
+      this.emitControlEvent(
+        `discord-left-${payload.channelId}`,
+        `Left ${channel ? `${channel.guildName}:#${channel.name}` : payload.channelId}`,
+        'discord-control:status',
+        { ttl: 5000 }
+      );
       
       // Update UI
       this.createControlPanelFacet();
@@ -524,7 +493,7 @@ export function createModule(env: IAxonEnvironment): typeof env.InteractiveCompo
           channels: channels,
           joinedChannels: Array.from(this.joinedChannels)
         }
-      }, 'merge');
+      });
     }
     
     private formatControlPanel(): string {
@@ -776,7 +745,7 @@ export function createModule(env: IAxonEnvironment): typeof env.InteractiveCompo
         if (!existingFacet) {
           this.addFacet({
             id: facetId,
-            type: 'defineAction',
+            type: 'action-definition',
             displayName: action.displayName,
             content: action.description,
             attributes: {
