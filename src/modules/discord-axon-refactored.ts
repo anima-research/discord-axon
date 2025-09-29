@@ -95,7 +95,34 @@ export function createModule(env: IAxonEnvironment): typeof env.InteractiveCompo
     private isFirstConnection: boolean = true;
     private shouldConnectOnNextFrame: boolean = false;
     private pendingMessages: any[] = [];
-    
+
+    private resolveFacetEntries(facets: unknown): Array<[string, any]> {
+      if (facets instanceof Map) {
+        return Array.from(facets.entries());
+      }
+      if (facets && typeof facets === 'object') {
+        return Object.entries(facets as Record<string, any>);
+      }
+      return [];
+    }
+
+    private extractFacetData(facet: any): Record<string, any> | undefined {
+      if (!facet || typeof facet !== 'object') {
+        return undefined;
+      }
+      const state = (facet as any).state;
+      if (state && typeof state === 'object') {
+        if (state.metadata && typeof state.metadata === 'object') {
+          return state.metadata as Record<string, any>;
+        }
+        return state as Record<string, any>;
+      }
+      if (facet.attributes && typeof facet.attributes === 'object') {
+        return facet.attributes as Record<string, any>;
+      }
+      return undefined;
+    }
+
     
     // Static metadata for persistence
     static persistentProperties: IPersistentMetadata[] = [
@@ -196,7 +223,7 @@ export function createModule(env: IAxonEnvironment): typeof env.InteractiveCompo
       
       // Subscribe to relevant events
       this.element.subscribe('frame:start');
-      this.element.subscribe('frame:end'); 
+      // frame:end removed for V2 compatibility
       this.element.subscribe('element:action');
       
       // Subscribe to control panel events
@@ -519,28 +546,37 @@ export function createModule(env: IAxonEnvironment): typeof env.InteractiveCompo
         
         // Get all existing message IDs from VEIL for this channel
         const existingMessageIds = new Set<string>();
-        console.log(`[Discord] VEIL facets type: ${typeof veilState.facets}, is Map: ${veilState.facets instanceof Map}`);
-        
-        // veilState.facets is an object, not a Map
-        for (const [facetId, facet] of Object.entries(veilState.facets)) {
-          const typedFacet = facet as any;
-          if (facetId.startsWith('discord-msg-') && 
-              typedFacet.attributes?.channelId === channelId &&
-              typedFacet.attributes?.messageId) {
-            existingMessageIds.add(typedFacet.attributes.messageId);
+        const facetEntries = this.resolveFacetEntries(veilState.facets);
+        console.log(`[Discord] VEIL facets available: ${facetEntries.length}`);
+
+        for (const [facetId, facet] of facetEntries) {
+          const metadata = this.extractFacetData(facet);
+          if (
+            metadata &&
+            facetId.startsWith('discord-msg-') &&
+            metadata.channelId === channelId &&
+            metadata.messageId
+          ) {
+            existingMessageIds.add(metadata.messageId);
           }
         }
-        
+
         // Also check in any existing history event children
-        for (const [facetId, facet] of Object.entries(veilState.facets)) {
-          const typedFacet = facet as any;
-          if (facetId.startsWith('discord-history-') && 
-              typedFacet.attributes?.channelId === channelId &&
-              typedFacet.children) {
-            for (const child of typedFacet.children) {
-              if (child.attributes?.messageId) {
-                existingMessageIds.add(child.attributes.messageId);
-              }
+        for (const [, facet] of facetEntries) {
+          const metadata = this.extractFacetData(facet);
+          if (!metadata || metadata.channelId !== channelId) {
+            continue;
+          }
+
+          const children = (facet as any).children;
+          if (!Array.isArray(children)) {
+            continue;
+          }
+
+          for (const child of children) {
+            const childMetadata = this.extractFacetData(child) ?? (child?.metadata as Record<string, any> | undefined);
+            if (childMetadata?.messageId) {
+              existingMessageIds.add(childMetadata.messageId);
             }
           }
         }
@@ -615,19 +651,23 @@ export function createModule(env: IAxonEnvironment): typeof env.InteractiveCompo
         const veilState = this.element?.space?.veilState?.getState();
         if (veilState) {
           const receivedMessageIds = new Set(messages.map((m: DiscordMessage) => m.messageId));
-          const existingFacets = veilState.facets;
+          const facetEntries = this.resolveFacetEntries(veilState.facets);
           
           console.log(`[Discord] Checking for deleted messages in channel ${channelId}`);
           console.log(`[Discord] Received ${messages.length} messages from history`);
-          console.log(`[Discord] Total facets in VEIL: ${existingFacets.size}`);
+          console.log(`[Discord] Total facets in VEIL: ${facetEntries.length}`);
           
           // Find all message facets for this channel that aren't deleted
           const existingMessageIds: string[] = [];
-          for (const [facetId, facet] of existingFacets) {
-            if (facetId.startsWith('discord-msg-') && 
-                facet.attributes?.channelId === channelId &&
-                !facet.attributes?.deleted) {
-              const messageId = facet.attributes?.messageId;
+          for (const [facetId, facet] of facetEntries) {
+            const metadata = this.extractFacetData(facet);
+            if (
+              metadata &&
+              facetId.startsWith('discord-msg-') &&
+              metadata.channelId === channelId &&
+              !metadata.deleted
+            ) {
+              const messageId = metadata.messageId;
               if (messageId) {
                 existingMessageIds.push(messageId);
               }
@@ -756,14 +796,16 @@ export function createModule(env: IAxonEnvironment): typeof env.InteractiveCompo
       // Update the facet using the changeFacet operation
       this.addOperation({
         type: 'changeFacet',
-        facetId,
-        updates: {
+        id: facetId,
+        changes: {
           content: `${author}: ${content}`,
-          attributes: {
-            content,
-            originalContent: oldContent,
-            edited: true,
-            editedAt: timestamp
+          state: {
+            metadata: {
+              content,
+              originalContent: oldContent,
+              edited: true,
+              editedAt: timestamp
+            }
           }
         }
       });
@@ -791,38 +833,40 @@ export function createModule(env: IAxonEnvironment): typeof env.InteractiveCompo
       
       // Update the facet to mark as deleted rather than removing it
       // This preserves history while indicating the message is no longer visible
-        this.addOperation({
+      this.addOperation({
         type: 'changeFacet',
-        facetId,
-        updates: {
-          attributes: {
-            deleted: true,
-            deletedAt: timestamp
+        id: facetId,
+        changes: {
+          state: {
+            metadata: {
+              deleted: true,
+              deletedAt: timestamp
+            }
           }
         }
       });
     }
     
-  private setConnectionState(state: typeof this.connectionState, error?: string): void {
-    this.connectionState = state;
-    if (error) {
-      this.lastError = error;
+    private setConnectionState(state: typeof this.connectionState, error?: string): void {
+      this.connectionState = state;
+      if (error) {
+        this.lastError = error;
+      }
+      
+      // Use our helper method to safely update state
+      if (this.inFrame()) {
+        // changeState will create the facet if it doesn't exist or update if it does
+        this.changeState('discord-connection', {
+          content: `Discord: ${state}${error ? ` - ${error}` : ''}`,
+          attributes: {
+            state,
+            error,
+            serverUrl: this.serverUrl,
+            attempts: this.connectionAttempts
+          }
+        });
+      }
     }
-    
-    // Use our helper method to safely update state
-    if (this.inFrame()) {
-      // changeState will create the facet if it doesn't exist or update if it does
-      this.changeState('discord-connection', {
-        content: `Discord: ${state}${error ? ` - ${error}` : ''}`,
-        attributes: {
-          state,
-          error,
-          serverUrl: this.serverUrl,
-          attempts: this.connectionAttempts
-        }
-      });
-    }
-  }
     
     private scheduleReconnect(): void {
       if (this.reconnectTimeout) {
