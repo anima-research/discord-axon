@@ -14,7 +14,9 @@ import { Element } from 'connectome-ts/src/spaces/element';
 import { Component } from 'connectome-ts/src/spaces/component';
 import { SpaceEvent } from 'connectome-ts/src/spaces/types';
 import { BaseReceptor, BaseEffector } from 'connectome-ts/src/components/base-martem';
-import type { Facet, ReadonlyVEILState, FacetDelta, EffectorResult } from 'connectome-ts/src';
+import { AgentEffector } from 'connectome-ts/src/agent/agent-effector';
+import { ContextTransform } from 'connectome-ts/src/hud/context-transform';
+import type { Facet, ReadonlyVEILState, FacetDelta, EffectorResult, AgentInterface } from 'connectome-ts/src';
 
 export interface DiscordAppConfig {
   agentName: string;
@@ -177,32 +179,41 @@ class DiscordSpeechEffector extends BaseEffector {
       // Check if this is for Discord
       if (!streamId || !streamId.startsWith('discord:')) continue;
       
-      // Extract channel ID from streamId (format: "discord:general")
-      const channelMatch = streamId.match(/discord:(.+)/);
-      if (!channelMatch) continue;
+      console.log(`[DiscordSpeechEffector] Processing speech for stream: ${streamId}`);
       
-      const channelName = channelMatch[1];
-      console.log(`[DiscordSpeechEffector] Sending speech to Discord channel: ${channelName}`);
+      // Find the most recent discord message facet to get the channelId
+      const discordMessages = Array.from(state.facets.values()).filter(
+        f => f.type === 'event' && (f as any).eventType === 'discord-message'
+      );
       
-      // Find the actual channel ID from stream metadata or component state
+      if (discordMessages.length === 0) {
+        console.warn('[DiscordSpeechEffector] No discord-message facets found');
+        continue;
+      }
+      
+      // Use the most recent message
+      const latestMessage = discordMessages[discordMessages.length - 1] as any;
+      const channelId = latestMessage.attributes?.channelId;
+      
+      if (!channelId) {
+        console.warn('[DiscordSpeechEffector] No channelId in message facet');
+        continue;
+      }
+      
+      console.log(`[DiscordSpeechEffector] Sending to channel ${channelId}: "${content}"`);
+      
+      // Call Discord send action directly
       const components = this.discordElement.components as any[];
       for (const comp of components) {
-        if (comp.channelNames && typeof comp.channelNames === 'object') {
-          // Find channel ID by name
-          const channelId = Object.entries(comp.channelNames).find(
-            ([id, name]) => name === channelName
-          )?.[0];
-          
-          if (channelId && comp.actions && comp.actions.has('send')) {
-            try {
-              const handler = comp.actions.get('send');
-              await handler({ channelId, message: content });
-              console.log(`[DiscordSpeechEffector] Sent message to channel ${channelId}`);
-            } catch (error) {
-              console.error(`Failed to send to Discord:`, error);
-            }
-            break;
+        if (comp.actions && comp.actions.has('send')) {
+          try {
+            const handler = comp.actions.get('send');
+            await handler({ channelId, message: content });
+            console.log(`[DiscordSpeechEffector] Successfully sent message`);
+          } catch (error) {
+            console.error(`Failed to send to Discord:`, error);
           }
+          break;
         }
       }
     }
@@ -437,6 +448,21 @@ export class DiscordApplication implements ConnectomeApplication {
   
   async onStart(space: Space, veilState: VEILStateManager): Promise<void> {
     console.log('🚀 Discord application started!');
+    
+    // Register RETM components for agent processing
+    // Find the agent element and component
+    const agentElem = space.children.find(child => child.name === 'discord-agent');
+    if (agentElem) {
+      const agentComponent = agentElem.getComponents(AgentComponent)[0];
+      if (agentComponent && (agentComponent as any).agent) {
+        const agent = (agentComponent as any).agent as AgentInterface;
+        
+        console.log('➕ Registering AgentEffector and ContextTransform');
+        space.addEffector(new AgentEffector(agentElem, agent));
+        space.addTransform(new ContextTransform(veilState));
+      }
+    }
+    
     // No initial activation - wait for Discord messages to trigger the agent
   }
   
