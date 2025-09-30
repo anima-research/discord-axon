@@ -554,44 +554,36 @@ export function createModule(env: IAxonEnvironment): typeof env.InteractiveCompo
       
       // Only emit history event if there are actually new messages
       if (messages.length > 0) {
-        // Emit the history as a single event
+        console.log(`[Discord] Emitting ${messages.length} history messages as individual events`);
+        
+        // Emit each history message as a discord:message event
+        // The DiscordMessageReceptor will convert them to facets
+        for (const message of messages) {
+          const streamId = this.buildStreamId(channelName, guildName || this.guildName);
+          this.element.emit({
+            topic: 'discord:message',
+            payload: {
+              ...message,
+              streamId,
+              streamType: 'discord',
+              isHistory: true  // Flag to avoid activation for history messages
+            },
+            timestamp: Date.now()
+          });
+          
+          // Mark as processed
+          this.processedMessages.add(message.messageId);
+        }
+        
+        // Emit summary event
         this.element.emit({
           topic: 'discord:history-received',
           payload: {
             channelId,
             channelName,
-            messages
+            messageCount: messages.length
           },
           timestamp: Date.now()
-        });
-        
-        // Add a history event facet
-        // Note: We still use addFacet for complex structures with children
-        this.addFacet({
-          id: `discord-history-${channelId}-${Date.now()}`,
-          type: 'event',
-          content: `Channel #${channelName} history (${messages.length} new messages)`,
-          displayName: 'channel-history',
-          attributes: {
-            channelId,
-            channelName,
-            messageCount: messages.length,
-            guildId: this.guildId
-          },
-          children: messages.map((message: DiscordMessage) => ({
-            id: `discord-msg-${message.messageId}`,
-            type: 'event',
-            displayName: 'discord-message',
-            content: `${message.author}: ${message.content}`,
-            attributes: {
-              channelId: message.channelId,
-              messageId: message.messageId,
-              author: message.author,
-              content: message.content,
-              timestamp: message.timestamp,
-              guildId: this.guildId
-            }
-          }))
         });
       } else {
         console.log(`[Discord] No new messages to add after deduplication`);
@@ -686,7 +678,7 @@ export function createModule(env: IAxonEnvironment): typeof env.InteractiveCompo
       // Build stream ID
       const streamId = this.buildStreamId(msg.channelName, msg.guildName || this.guildName);
       
-      // Emit message event with stream info
+      // Emit message event with stream info - a Receptor will handle creating facets
       this.element.emit({
         topic: 'discord:message',
         payload: {
@@ -697,27 +689,11 @@ export function createModule(env: IAxonEnvironment): typeof env.InteractiveCompo
         timestamp: Date.now()
       });
       
-      // Add message facet using the helper method
-      this.addEvent(
-        'discord-message',
-        `${msg.author}: ${msg.content}`,
-        `discord-msg-${msg.messageId}`, // Stable ID
-        {
-          channelId: msg.channelId,
-          channelName: msg.channelName,
-          messageId: msg.messageId,
-          author: msg.author,
-          content: msg.content,
-          timestamp: msg.timestamp,
-          guildId: this.guildId,
-          guildName: msg.guildName || this.guildName,
-          streamId,
-          streamType: 'discord'
-        }
-      );
-      
       // Update last read
       this.lastRead[msg.channelId] = msg.messageId;
+      
+      // Mark as processed to avoid duplicates
+      this.processedMessages.add(msg.messageId);
     }
     
     private handleMessageSent(msg: any): void {
@@ -741,33 +717,18 @@ export function createModule(env: IAxonEnvironment): typeof env.InteractiveCompo
       const facetId = `discord-msg-${messageId}`;
       const streamId = this.buildStreamId(msg.channelName, msg.guildName || this.guildName);
       
-      // Emit update event
+      // Emit update event - a Receptor will handle creating facets
       this.element.emit({
         topic: 'discord:messageUpdate',
         payload: {
           ...msg,
           streamId,
           streamType: 'discord',
-          facetId
+          facetId,
+          oldContent,
+          content
         },
         timestamp: Date.now()
-      });
-      
-      // Update the facet using the changeFacet operation
-      this.addOperation({
-        type: 'changeFacet',
-        id: facetId,
-        changes: {
-          content: `${author}: ${content}`,
-          state: {
-            metadata: {
-              content,
-              originalContent: oldContent,
-              edited: true,
-              editedAt: timestamp
-            }
-          }
-        }
       });
     }
     
@@ -779,31 +740,18 @@ export function createModule(env: IAxonEnvironment): typeof env.InteractiveCompo
       const facetId = `discord-msg-${messageId}`;
       const streamId = this.buildStreamId(msg.channelName, msg.guildName || this.guildName);
       
-      // Emit delete event
+      // Emit delete event - a Receptor will handle creating facets
       this.element.emit({
         topic: 'discord:messageDelete',
         payload: {
           ...msg,
           streamId,
           streamType: 'discord',
-          facetId
+          facetId,
+          messageId,
+          author
         },
         timestamp: Date.now()
-      });
-      
-      // Update the facet to mark as deleted rather than removing it
-      // This preserves history while indicating the message is no longer visible
-      this.addOperation({
-        type: 'changeFacet',
-        id: facetId,
-        changes: {
-          state: {
-            metadata: {
-              deleted: true,
-              deletedAt: timestamp
-            }
-          }
-        }
       });
     }
     
@@ -813,19 +761,17 @@ export function createModule(env: IAxonEnvironment): typeof env.InteractiveCompo
         this.lastError = error;
       }
       
-      // Use our helper method to safely update state
-      if (this.inFrame()) {
-        // changeState will create the facet if it doesn't exist or update if it does
-        this.changeState('discord-connection', {
-          content: `Discord: ${state}${error ? ` - ${error}` : ''}`,
-          attributes: {
-            state,
-            error,
-            serverUrl: this.serverUrl,
-            attempts: this.connectionAttempts
-          }
-        });
-      }
+      // In RETM architecture, just emit an event - a Receptor can create facets if needed
+      this.element.emit({
+        topic: 'discord:connection-state',
+        payload: {
+          state,
+          error,
+          serverUrl: this.serverUrl,
+          attempts: this.connectionAttempts
+        },
+        timestamp: Date.now()
+      });
     }
     
     private scheduleReconnect(): void {
@@ -864,13 +810,12 @@ export function createModule(env: IAxonEnvironment): typeof env.InteractiveCompo
         this.joinedChannels.push(channelId);
       }
       
-      // Add join event using helper method
-      this.addEvent(
-        'channel-join',
-        `Joined channel ${channelId}`,
-        `discord-join-${channelId}-${Date.now()}`,
-        { channelId }
-      );
+      // Emit event - Receptor can create facets if needed
+      this.element.emit({
+        topic: 'discord:action-join',
+        payload: { channelId },
+        timestamp: Date.now()
+      });
     }
     
     async leave(params: { channelId: string }): Promise<void> {
@@ -889,13 +834,12 @@ export function createModule(env: IAxonEnvironment): typeof env.InteractiveCompo
       
       this.joinedChannels = this.joinedChannels.filter(id => id !== channelId);
       
-      // Add leave event using helper method
-      this.addEvent(
-        'channel-leave',
-        `Left channel ${channelId}`,
-        `discord-leave-${channelId}-${Date.now()}`,
-        { channelId }
-      );
+      // Emit event - Receptor can create facets if needed
+      this.element.emit({
+        topic: 'discord:action-leave',
+        payload: { channelId },
+        timestamp: Date.now()
+      });
     }
     
     async send(params: { channelId: string; message: string }): Promise<void> {

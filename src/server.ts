@@ -64,7 +64,40 @@ class CombinedDiscordAxonServer {
     // Always use source directory for modules (AxonModuleServer transpiles them)
     const modulesDir = join(__dirname, '..', 'src', 'modules');
     
-    // Map module names to their actual file names
+    // Register the new Discord Afferent
+    await this.moduleServer.addModule('discord-afferent', {
+      name: 'discord-afferent',
+      path: join(modulesDir, 'discord-afferent.ts'),
+      manifest: {
+        name: 'DiscordAfferent',
+        version: '2.0.0',
+        description: 'Discord WebSocket afferent for RETM architecture',
+        componentClass: 'DiscordAfferent',
+        moduleType: 'function',
+        exports: {
+          afferents: ['DiscordAfferent']
+        },
+        actions: {
+          'join': {
+            description: 'Join a Discord channel',
+            parameters: { channelId: { type: 'string', required: true } }
+          },
+          'leave': {
+            description: 'Leave a Discord channel',
+            parameters: { channelId: { type: 'string', required: true } }
+          },
+          'send': {
+            description: 'Send a message to a channel',
+            parameters: { 
+              channelId: { type: 'string', required: true },
+              message: { type: 'string', required: true }
+            }
+          }
+        }
+      }
+    });
+    
+    // Keep old discord module for backward compatibility
     await this.moduleServer.addModule('discord', {
       name: 'discord',
       path: join(modulesDir, 'discord-axon-refactored.ts'),

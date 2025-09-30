@@ -56,9 +56,9 @@ class DiscordMessageReceptor extends BaseReceptor {
   
   transform(event: SpaceEvent, state: ReadonlyVEILState): Facet[] {
     const payload = event.payload as any;
-    const { channelId, channelName, author, content, messageId, streamId, streamType } = payload;
+    const { channelId, channelName, author, content, messageId, streamId, streamType, isHistory } = payload;
     
-    console.log(`[DiscordMessageReceptor] Processing message from ${author}: "${content}"`);
+    console.log(`[DiscordMessageReceptor] Processing message from ${author}: "${content}"${isHistory ? ' (history)' : ''}`);
     
     const facets: Facet[] = [];
     
@@ -74,35 +74,108 @@ class DiscordMessageReceptor extends BaseReceptor {
         author,
         messageId,
         streamId,
-        streamType
+        streamType,
+        isHistory
       }
     });
     
-    // For simplicity, activate agent for all Discord messages
-    // (The DiscordChat component has more sophisticated filtering but requires event handling)
-    console.log(`[DiscordMessageReceptor] Creating agent activation`);
-    facets.push({
-      id: `activation-${messageId}`,
-      type: 'agent-activation',
-      content: `Discord message from ${author}`,
-      state: {
-        source: 'discord-message',
-        reason: 'discord_message',
-        priority: 'normal',
-        channelId,
-        messageId,
-        author,
-        streamRef: {
-          streamId,
-          streamType,
-          metadata: {
-            channelId,
-            channelName
+    // Only activate agent for live messages, not history
+    if (!isHistory) {
+      console.log(`[DiscordMessageReceptor] Creating agent activation`);
+      facets.push({
+        id: `activation-${messageId}`,
+        type: 'agent-activation',
+        content: `Discord message from ${author}`,
+        state: {
+          source: 'discord-message',
+          reason: 'discord_message',
+          priority: 'normal',
+          channelId,
+          messageId,
+          author,
+          streamRef: {
+            streamId,
+            streamType,
+            metadata: {
+              channelId,
+              channelName
+            }
           }
+        },
+        ephemeral: true
+      });
+    }
+    
+    return facets;
+  }
+}
+
+/**
+ * Receptor: Handles message edits
+ */
+class DiscordMessageUpdateReceptor extends BaseReceptor {
+  topics = ['discord:messageUpdate'];
+  
+  transform(event: SpaceEvent, state: ReadonlyVEILState): Facet[] {
+    const payload = event.payload as any;
+    const { messageId, content, oldContent, author, channelName } = payload;
+    
+    console.log(`[DiscordMessageUpdateReceptor] Message ${messageId} edited by ${author}`);
+    
+    const facets: Facet[] = [];
+    const facetId = `discord-msg-${messageId}`;
+    
+    // Check if the message facet exists
+    if (state.facets.has(facetId)) {
+      // Create an event facet for the edit
+      facets.push({
+        id: `discord-edit-${messageId}-${Date.now()}`,
+        type: 'event',
+        content: `${author} edited their message in #${channelName}`,
+        eventType: 'discord-message-edited',
+        attributes: {
+          messageId,
+          oldContent,
+          newContent: content,
+          author
         }
-      },
-      ephemeral: true
-    });
+      });
+    }
+    
+    return facets;
+  }
+}
+
+/**
+ * Receptor: Handles message deletions
+ */
+class DiscordMessageDeleteReceptor extends BaseReceptor {
+  topics = ['discord:messageDelete'];
+  
+  transform(event: SpaceEvent, state: ReadonlyVEILState): Facet[] {
+    const payload = event.payload as any;
+    const { messageId, author, channelName } = payload;
+    
+    console.log(`[DiscordMessageDeleteReceptor] Message ${messageId} deleted`);
+    
+    const facets: Facet[] = [];
+    const facetId = `discord-msg-${messageId}`;
+    
+    // Check if the message facet exists
+    if (state.facets.has(facetId)) {
+      // Create an event facet for the deletion
+      facets.push({
+        id: `discord-delete-${messageId}-${Date.now()}`,
+        type: 'event',
+        content: `${author || 'Someone'} deleted their message in #${channelName || 'a channel'}`,
+        eventType: 'discord-message-deleted',
+        attributes: {
+          messageId,
+          author,
+          deletedFacetId: facetId
+        }
+      });
+    }
     
     return facets;
   }
@@ -133,14 +206,21 @@ class DiscordAutoJoinEffector extends BaseEffector {
     
     console.log('🤖 Discord connected! Auto-joining channels:', this.channels);
     
-    // Call join action directly on Discord element
+    // Call join on the Discord afferent
     for (const channelId of this.channels) {
-      console.log(`📢 Calling join action for channel: ${channelId}`);
+      console.log(`📢 Calling join for channel: ${channelId}`);
       
-      // Find the Discord component and call its join method directly
+      // Find the Discord afferent (or component) and call join
       const components = this.discordElement.components as any[];
       for (const comp of components) {
-        if (comp.actions && comp.actions.has('join')) {
+        if (comp.join && typeof comp.join === 'function') {
+          try {
+            await comp.join({ channelId });
+          } catch (error) {
+            console.error(`Failed to join channel ${channelId}:`, error);
+          }
+          break;
+        } else if (comp.actions && comp.actions.has('join')) {
           try {
             const handler = comp.actions.get('join');
             await handler({ channelId });
@@ -202,10 +282,18 @@ class DiscordSpeechEffector extends BaseEffector {
       
       console.log(`[DiscordSpeechEffector] Sending to channel ${channelId}: "${content}"`);
       
-      // Call Discord send action directly
+      // Call send on the Discord afferent (or component)
       const components = this.discordElement.components as any[];
       for (const comp of components) {
-        if (comp.actions && comp.actions.has('send')) {
+        if (comp.send && typeof comp.send === 'function') {
+          try {
+            await comp.send({ channelId, message: content });
+            console.log(`[DiscordSpeechEffector] Successfully sent message`);
+          } catch (error) {
+            console.error(`Failed to send to Discord:`, error);
+          }
+          break;
+        } else if (comp.actions && comp.actions.has('send')) {
           try {
             const handler = comp.actions.get('send');
             await handler({ channelId, message: content });
@@ -313,18 +401,13 @@ export class DiscordApplication implements ConnectomeApplication {
       if (axonLoader) {
         // Always try to reconnect in case the AXON server was restarted
         console.log('🔄 Ensuring Discord element is connected to AXON...');
-        // Build the AXON URL with connection parameters
+        // Build the AXON URL - use new afferent module
         const modulePort = this.config.discord.modulePort || 8080;
-        const axonUrl = `axon://localhost:${modulePort}/modules/discord-chat/manifest?` + 
+        const axonUrl = `axon://localhost:${modulePort}/modules/discord-afferent/manifest?` + 
           `host=${encodeURIComponent(this.config.discord.host)}&` +
           `path=${encodeURIComponent('/ws')}&` +
           `guild=${encodeURIComponent(this.config.discord.guild)}&` +
-          `agent=${encodeURIComponent(this.config.agentName)}&` +
-          // Chat trigger configuration
-          `mentions=true&` +
-          `directMessages=true&` +
-          `keywords=${encodeURIComponent('hi,hello,help,?,connectome')}&` +
-          `cooldown=0`;
+          `agent=${encodeURIComponent(this.config.agentName)}`;
         
         try {
           await axonLoader.connect(axonUrl);
@@ -334,32 +417,26 @@ export class DiscordApplication implements ConnectomeApplication {
       }
     } else {
       console.log('🆕 Creating new Discord element');
-    // Create Discord element with AxonLoaderComponent
+      // Create Discord element with AxonLoaderComponent for the Afferent
       discordElem = new Element('discord', 'discord');
-    const axonLoader = new AxonLoaderComponent();
-    
-    // Build the AXON URL with connection parameters
-      // Default to module server port (8080)
+      const axonLoader = new AxonLoaderComponent();
+      
+      // Build the AXON URL - use discord-afferent module
       const modulePort = this.config.discord.modulePort || 8080;
-    const axonUrl = `axon://localhost:${modulePort}/modules/discord-chat/manifest?` + 
-      `host=${encodeURIComponent(this.config.discord.host)}&` +
-      `path=${encodeURIComponent('/ws')}&` +
-      `guild=${encodeURIComponent(this.config.discord.guild)}&` +
-      `agent=${encodeURIComponent(this.config.agentName)}&` +
-      // Chat trigger configuration
-      `mentions=true&` +
-      `directMessages=true&` +
-      `keywords=${encodeURIComponent('hi,hello,help,?,connectome')}&` +
-      `cooldown=0`;
-    
-    // Add Discord element to space first
-    space.addChild(discordElem);
-    
-    // Add the component and wait for it to mount
-    await discordElem.addComponentAsync(axonLoader);
-    
-    // Connect to the AXON component server
-    await axonLoader.connect(axonUrl);
+      const axonUrl = `axon://localhost:${modulePort}/modules/discord-afferent/manifest?` + 
+        `host=${encodeURIComponent(this.config.discord.host)}&` +
+        `path=${encodeURIComponent('/ws')}&` +
+        `guild=${encodeURIComponent(this.config.discord.guild)}&` +
+        `agent=${encodeURIComponent(this.config.agentName)}`;
+      
+      // Add Discord element to space first
+      space.addChild(discordElem);
+      
+      // Add the component and wait for it to mount
+      await discordElem.addComponentAsync(axonLoader);
+      
+      // Connect to the AXON afferent server
+      await axonLoader.connect(axonUrl);
     }
     
     // Check if agent element already exists (from persistence)
@@ -403,6 +480,8 @@ export class DiscordApplication implements ConnectomeApplication {
     // Add RETM components for Discord integration
     space.addReceptor(new DiscordConnectedReceptor());
     space.addReceptor(new DiscordMessageReceptor());
+    space.addReceptor(new DiscordMessageUpdateReceptor());
+    space.addReceptor(new DiscordMessageDeleteReceptor());
     space.addEffector(new DiscordSpeechEffector(discordElem));
     
     if (this.config.discord.autoJoinChannels && this.config.discord.autoJoinChannels.length > 0 && discordElem) {
