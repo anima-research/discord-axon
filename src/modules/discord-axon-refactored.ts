@@ -93,8 +93,6 @@ export function createModule(env: IAxonEnvironment): typeof env.InteractiveCompo
     private shouldReconnect: boolean = true;
     private processedMessages: Set<string> = new Set();
     private isFirstConnection: boolean = true;
-    private shouldConnectOnNextFrame: boolean = false;
-    private pendingMessages: any[] = [];
 
     private resolveFacetEntries(facets: unknown): Array<[string, any]> {
       if (facets instanceof Map) {
@@ -234,27 +232,11 @@ export function createModule(env: IAxonEnvironment): typeof env.InteractiveCompo
     }
     
     async handleEvent(event: ISpaceEvent): Promise<void> {
-      // No super.handleEvent() - IInteractiveComponent doesn't have this method
-      
+      // Note: In RETM architecture, handleEvent is not called for subscribed events
+      // This method is kept for compatibility but may not be invoked
       console.log(`[Discord] handleEvent called with topic: ${event.topic}`);
       
-      if (event.topic === 'frame:start') {
-        // Process any pending messages
-        if (this.pendingMessages.length > 0) {
-          console.log(`[Discord] Processing ${this.pendingMessages.length} pending messages in frame:start`);
-          const messages = [...this.pendingMessages];
-          this.pendingMessages = [];
-          for (const msg of messages) {
-            this.processAxonMessage(msg);
-          }
-        }
-        
-        // Handle deferred connection
-        if (this.shouldConnectOnNextFrame) {
-          this.shouldConnectOnNextFrame = false;
-          await this.startConnection();
-        }
-      } else if (event.topic === 'discord:request-guilds') {
+      if (event.topic === 'discord:request-guilds') {
         await this.handleRequestGuilds();
       } else if (event.topic === 'discord:request-channels') {
         await this.handleRequestChannels(event.payload);
@@ -269,16 +251,10 @@ export function createModule(env: IAxonEnvironment): typeof env.InteractiveCompo
       console.log('🔌 Discord onReferencesResolved - token:', this.botToken ? 'SET' : 'NOT SET', 'serverUrl:', this.serverUrl);
       
       if (this.serverUrl && this.botToken && this.connectionState === 'disconnected') {
-        // Emit an event to ensure we get a frame:start event to trigger connection
-        console.log('🔌 Discord emitting event to trigger frame after references resolved');
-        this.shouldConnectOnNextFrame = true;
-        
-        // Emit a low-priority event that will trigger a frame
-        this.element.emit({
-          topic: 'discord:ready-to-connect',
-          payload: {},
-          timestamp: Date.now(),
-          priority: 'low'
+        // In RETM architecture, directly trigger connection instead of waiting for frame:start
+        console.log('🔌 Discord connecting immediately after references resolved');
+        this.connect().catch(error => {
+          console.error('[Discord] Failed to connect:', error);
         });
       }
     }
@@ -369,24 +345,8 @@ export function createModule(env: IAxonEnvironment): typeof env.InteractiveCompo
     private handleAxonMessage(msg: any): void {
       console.log('[Discord] Received message:', msg);
       
-      // Check if we're in a frame
-      const space = this.element?.space;
-      const inFrame = space && (space as any).getCurrentFrame && (space as any).getCurrentFrame();
-      
-      if (!inFrame) {
-        // Queue the message to be processed in the next frame
-        console.log(`[Discord] Queueing message for next frame:`, msg.type);
-        this.pendingMessages.push(msg);
-        
-        // Emit a dummy event to trigger frame processing
-        this.element.emit({
-          topic: 'discord:pending-messages',
-          payload: { count: this.pendingMessages.length },
-          timestamp: Date.now()
-        });
-        return;
-      }
-      
+      // In RETM architecture, process messages immediately
+      // The component will emit events as needed
       this.processAxonMessage(msg);
     }
     

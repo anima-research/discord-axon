@@ -61,7 +61,8 @@ class CombinedDiscordAxonServer {
   }
   
   private async registerDiscordModules(): Promise<void> {
-    const modulesDir = join(__dirname, 'modules');
+    // Always use source directory for modules (AxonModuleServer transpiles them)
+    const modulesDir = join(__dirname, '..', 'src', 'modules');
     
     // Map module names to their actual file names
     await this.moduleServer.addModule('discord', {

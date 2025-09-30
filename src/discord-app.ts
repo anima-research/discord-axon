@@ -13,6 +13,8 @@ import { AxonLoaderComponent } from 'connectome-ts/src/components/axon-loader';
 import { Element } from 'connectome-ts/src/spaces/element';
 import { Component } from 'connectome-ts/src/spaces/component';
 import { SpaceEvent } from 'connectome-ts/src/spaces/types';
+import { BaseReceptor, BaseEffector } from 'connectome-ts/src/components/base-martem';
+import type { Facet, ReadonlyVEILState, FacetDelta, EffectorResult } from 'connectome-ts/src';
 
 export interface DiscordAppConfig {
   agentName: string;
@@ -27,7 +29,191 @@ export interface DiscordAppConfig {
 }
 
 /**
+ * Receptor: Converts discord:connected events to facets
+ */
+class DiscordConnectedReceptor extends BaseReceptor {
+  topics = ['discord:connected'];
+  
+  transform(event: SpaceEvent, state: ReadonlyVEILState): Facet[] {
+    console.log('[DiscordConnectedReceptor] Processing discord:connected event');
+    return [{
+      id: `discord-connected-${Date.now()}`,
+      type: 'event',
+      content: 'Discord connected',
+      eventType: 'discord-connected',
+      attributes: event.payload as Record<string, any>
+    }];
+  }
+}
+
+/**
+ * Receptor: Converts discord:message events into message facets and agent activations
+ */
+class DiscordMessageReceptor extends BaseReceptor {
+  topics = ['discord:message'];
+  
+  transform(event: SpaceEvent, state: ReadonlyVEILState): Facet[] {
+    const payload = event.payload as any;
+    const { channelId, channelName, author, content, messageId, streamId, streamType } = payload;
+    
+    console.log(`[DiscordMessageReceptor] Processing message from ${author}: "${content}"`);
+    
+    const facets: Facet[] = [];
+    
+    // Create message facet
+    facets.push({
+      id: `discord-msg-${messageId}`,
+      type: 'event',
+      content: `${author}: ${content}`,
+      eventType: 'discord-message',
+      attributes: {
+        channelId,
+        channelName,
+        author,
+        messageId,
+        streamId,
+        streamType
+      }
+    });
+    
+    // For simplicity, activate agent for all Discord messages
+    // (The DiscordChat component has more sophisticated filtering but requires event handling)
+    console.log(`[DiscordMessageReceptor] Creating agent activation`);
+    facets.push({
+      id: `activation-${messageId}`,
+      type: 'agent-activation',
+      content: `Discord message from ${author}`,
+      state: {
+        source: 'discord-message',
+        reason: 'discord_message',
+        priority: 'normal',
+        channelId,
+        messageId,
+        author,
+        streamRef: {
+          streamId,
+          streamType,
+          metadata: {
+            channelId,
+            channelName
+          }
+        }
+      },
+      ephemeral: true
+    });
+    
+    return facets;
+  }
+}
+
+/**
+ * Effector: Auto-joins Discord channels when connected
+ */
+class DiscordAutoJoinEffector extends BaseEffector {
+  facetFilters = [{ type: 'event' }];
+  
+  constructor(private channels: string[], private discordElement: Element) {
+    super();
+  }
+  
+  async process(changes: FacetDelta[], state: ReadonlyVEILState): Promise<EffectorResult> {
+    const events: SpaceEvent[] = [];
+    
+    // Check if we have a discord:connected facet
+    const hasConnected = changes.some(
+      c => c.type === 'added' && c.facet.type === 'event' && 
+      (c.facet as any).eventType === 'discord-connected'
+    );
+    
+    if (!hasConnected) {
+      return { events };
+    }
+    
+    console.log('🤖 Discord connected! Auto-joining channels:', this.channels);
+    
+    // Call join action directly on Discord element
+    for (const channelId of this.channels) {
+      console.log(`📢 Calling join action for channel: ${channelId}`);
+      
+      // Find the Discord component and call its join method directly
+      const components = this.discordElement.components as any[];
+      for (const comp of components) {
+        if (comp.actions && comp.actions.has('join')) {
+          try {
+            const handler = comp.actions.get('join');
+            await handler({ channelId });
+          } catch (error) {
+            console.error(`Failed to join channel ${channelId}:`, error);
+          }
+          break;
+        }
+      }
+    }
+    
+    return { events };
+  }
+}
+
+/**
+ * Effector: Sends agent speech to Discord
+ */
+class DiscordSpeechEffector extends BaseEffector {
+  facetFilters = [{ type: 'speech' }];
+  
+  constructor(private discordElement: Element) {
+    super();
+  }
+  
+  async process(changes: FacetDelta[], state: ReadonlyVEILState): Promise<EffectorResult> {
+    const events: SpaceEvent[] = [];
+    
+    for (const change of changes) {
+      if (change.type !== 'added' || change.facet.type !== 'speech') continue;
+      
+      const speech = change.facet as any;
+      const streamId = speech.streamId;
+      const content = speech.content;
+      
+      // Check if this is for Discord
+      if (!streamId || !streamId.startsWith('discord:')) continue;
+      
+      // Extract channel ID from streamId (format: "discord:general")
+      const channelMatch = streamId.match(/discord:(.+)/);
+      if (!channelMatch) continue;
+      
+      const channelName = channelMatch[1];
+      console.log(`[DiscordSpeechEffector] Sending speech to Discord channel: ${channelName}`);
+      
+      // Find the actual channel ID from stream metadata or component state
+      const components = this.discordElement.components as any[];
+      for (const comp of components) {
+        if (comp.channelNames && typeof comp.channelNames === 'object') {
+          // Find channel ID by name
+          const channelId = Object.entries(comp.channelNames).find(
+            ([id, name]) => name === channelName
+          )?.[0];
+          
+          if (channelId && comp.actions && comp.actions.has('send')) {
+            try {
+              const handler = comp.actions.get('send');
+              await handler({ channelId, message: content });
+              console.log(`[DiscordSpeechEffector] Sent message to channel ${channelId}`);
+            } catch (error) {
+              console.error(`Failed to send to Discord:`, error);
+            }
+            break;
+          }
+        }
+      }
+    }
+    
+    return { events };
+  }
+}
+
+/**
  * Test component that auto-joins Discord channels when connected
+ * DEPRECATED: Use DiscordAutoJoinReceptor instead for RETM architecture
  */
 @persistable(1)
 class DiscordAutoJoinComponent extends Component {
@@ -203,15 +389,18 @@ export class DiscordApplication implements ConnectomeApplication {
     agentElem.addComponent(agentComponent);
     }
     
-    // Add auto-join component for testing (if not already present)
-    if (this.config.discord.autoJoinChannels && this.config.discord.autoJoinChannels.length > 0) {
-      const hasAutoJoin = agentElem.getComponents(DiscordAutoJoinComponent).length > 0;
-      
-      if (!hasAutoJoin) {
-        console.log('➕ Adding auto-join component');
-      const autoJoinComponent = new DiscordAutoJoinComponent(this.config.discord.autoJoinChannels);
-      agentElem.addComponent(autoJoinComponent);
-      }
+    // Add RETM components for Discord integration
+    space.addReceptor(new DiscordConnectedReceptor());
+    space.addReceptor(new DiscordMessageReceptor());
+    space.addEffector(new DiscordSpeechEffector(discordElem));
+    
+    if (this.config.discord.autoJoinChannels && this.config.discord.autoJoinChannels.length > 0 && discordElem) {
+      console.log('➕ Adding auto-join effector for channels:', this.config.discord.autoJoinChannels);
+      const autoJoinEffector = new DiscordAutoJoinEffector(
+        this.config.discord.autoJoinChannels,
+        discordElem
+      );
+      space.addEffector(autoJoinEffector);
     }
     
     // Add agent element to space only if it's a new element
