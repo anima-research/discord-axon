@@ -17,6 +17,7 @@ import { BaseReceptor, BaseEffector } from 'connectome-ts/src/components/base-ma
 import { AgentEffector } from 'connectome-ts/src/agent/agent-effector';
 import { ContextTransform } from 'connectome-ts/src/hud/context-transform';
 import type { Facet, ReadonlyVEILState, FacetDelta, EffectorResult, AgentInterface } from 'connectome-ts/src';
+import { updateStateFacets } from 'connectome-ts/src/helpers/factories';
 
 export interface DiscordAppConfig {
   agentName: string;
@@ -36,77 +37,212 @@ export interface DiscordAppConfig {
 class DiscordConnectedReceptor extends BaseReceptor {
   topics = ['discord:connected'];
   
-  transform(event: SpaceEvent, state: ReadonlyVEILState): Facet[] {
+  transform(event: SpaceEvent, state: ReadonlyVEILState): any[] {
     console.log('[DiscordConnectedReceptor] Processing discord:connected event');
     return [{
-      id: `discord-connected-${Date.now()}`,
-      type: 'event',
-      content: 'Discord connected',
-      eventType: 'discord-connected',
-      attributes: event.payload as Record<string, any>
+      type: 'addFacet',
+      facet: {
+        id: `discord-connected-${Date.now()}`,
+        type: 'event',
+        content: 'Discord connected',
+        eventType: 'discord-connected',
+        attributes: event.payload as Record<string, any>
+      }
     }];
   }
 }
 
 /**
  * Receptor: Converts discord:message events into message facets and agent activations
+ * Also tracks lastRead per channel in VEIL for de-duplication
  */
 class DiscordMessageReceptor extends BaseReceptor {
   topics = ['discord:message'];
   
-  transform(event: SpaceEvent, state: ReadonlyVEILState): Facet[] {
+  transform(event: SpaceEvent, state: ReadonlyVEILState): any[] {
     const payload = event.payload as any;
     const { channelId, channelName, author, content, messageId, streamId, streamType, isHistory } = payload;
     
+    // Check if we've already processed this message (de-dup against VEIL)
+    const lastReadFacet = state.facets.get(`discord-lastread-${channelId}`);
+    const lastMessageId = lastReadFacet?.state?.value;
+    
+    if (lastMessageId && this.isOlderOrEqual(messageId, lastMessageId)) {
+      console.log(`[DiscordMessageReceptor] Skipping old/duplicate message ${messageId}`);
+      return []; // Skip old message
+    }
+    
     console.log(`[DiscordMessageReceptor] Processing message from ${author}: "${content}"${isHistory ? ' (history)' : ''}`);
     
-    const facets: Facet[] = [];
+    const deltas: any[] = [];
     
     // Create message facet
-    facets.push({
-      id: `discord-msg-${messageId}`,
-      type: 'event',
-      content: `${author}: ${content}`,
-      eventType: 'discord-message',
-      attributes: {
-        channelId,
-        channelName,
-        author,
-        messageId,
-        streamId,
-        streamType,
-        isHistory
+    deltas.push({
+      type: 'addFacet',
+      facet: {
+        id: `discord-msg-${messageId}`,
+        type: 'event',
+        content: `${author}: ${content}`,
+        eventType: 'discord-message',
+        attributes: {
+          channelId,
+          channelName,
+          author,
+          messageId,
+          streamId,
+          streamType,
+          isHistory
+        }
       }
     });
+    
+    // Update lastRead in VEIL (nested facet pattern)
+    deltas.push(...updateStateFacets(
+      'discord-lastread',
+      { [channelId]: messageId },
+      state
+    ));
     
     // Only activate agent for live messages, not history
     if (!isHistory) {
       console.log(`[DiscordMessageReceptor] Creating agent activation`);
-      facets.push({
-        id: `activation-${messageId}`,
-        type: 'agent-activation',
-        content: `Discord message from ${author}`,
-        state: {
-          source: 'discord-message',
-          reason: 'discord_message',
-          priority: 'normal',
-          channelId,
-          messageId,
-          author,
-          streamRef: {
-            streamId,
-            streamType,
-            metadata: {
-              channelId,
-              channelName
+      deltas.push({
+        type: 'addFacet',
+        facet: {
+          id: `activation-${messageId}`,
+          type: 'agent-activation',
+          content: `Discord message from ${author}`,
+          state: {
+            source: 'discord-message',
+            reason: 'discord_message',
+            priority: 'normal',
+            channelId,
+            messageId,
+            author,
+            streamRef: {
+              streamId,
+              streamType,
+              metadata: {
+                channelId,
+                channelName
+              }
             }
-          }
-        },
-        ephemeral: true
+          },
+          ephemeral: true
+        }
       });
     }
     
-    return facets;
+    return deltas;
+  }
+  
+  private isOlderOrEqual(messageId: string, lastMessageId: string): boolean {
+    // Discord snowflake IDs are chronological
+    try {
+      return BigInt(messageId) <= BigInt(lastMessageId);
+    } catch {
+      return false;
+    }
+  }
+}
+
+/**
+ * Receptor: Detects offline edits and deletes by comparing history to VEIL
+ */
+class DiscordHistorySyncReceptor extends BaseReceptor {
+  topics = ['discord:history-sync'];
+  
+  transform(event: SpaceEvent, state: ReadonlyVEILState): any[] {
+    const { channelId, messages } = event.payload as any;
+    const deltas: any[] = [];
+    
+    console.log(`[DiscordHistorySync] Syncing ${messages.length} messages for channel ${channelId}`);
+    
+    // Build map of current Discord state
+    const discordMessages = new Map(messages.map((m: any) => [m.messageId, m]));
+    
+    // Find all Discord message facets for this channel in VEIL
+    const veilMessages = Array.from(state.facets.values()).filter(
+      f => f.type === 'event' && 
+           (f as any).eventType === 'discord-message' &&
+           (f as any).attributes?.channelId === channelId
+    );
+    
+    let deletedCount = 0;
+    let editedCount = 0;
+    
+    for (const veilMsg of veilMessages) {
+      const messageId = (veilMsg as any).attributes.messageId;
+      const veilContent = (veilMsg as any).content;
+      const discordMsg = discordMessages.get(messageId) as any;
+      
+      if (!discordMsg) {
+        // Message was DELETED offline
+        console.log(`[DiscordHistorySync] Message ${messageId} deleted offline`);
+        deletedCount++;
+        
+        // Remove the message facet (exotemporal - rewriting reality)
+        deltas.push({
+          type: 'removeFacet',
+          id: veilMsg.id
+        });
+        
+        // Optional: Add event facet recording the deletion
+        deltas.push({
+          type: 'addFacet',
+          facet: {
+            id: `discord-offline-delete-${messageId}-${Date.now()}`,
+            type: 'event',
+            content: `[A message was deleted while offline]`,
+            eventType: 'discord-message-deleted-offline',
+            attributes: { messageId, channelId }
+          }
+        });
+        
+      } else if (this.extractContent(veilContent) !== discordMsg.content) {
+        // Message was EDITED offline
+        console.log(`[DiscordHistorySync] Message ${messageId} edited offline`);
+        editedCount++;
+        
+        // Rewrite the message facet (exotemporal - updating to current reality)
+        deltas.push({
+          type: 'rewriteFacet',
+          id: veilMsg.id,
+          changes: {
+            content: `${discordMsg.author}: ${discordMsg.content}`
+          }
+        });
+        
+        // Optional: Add event facet recording the edit
+        deltas.push({
+          type: 'addFacet',
+          facet: {
+            id: `discord-offline-edit-${messageId}-${Date.now()}`,
+            type: 'event',
+            content: `[A message was edited while offline]`,
+            eventType: 'discord-message-edited-offline',
+            attributes: { 
+              messageId, 
+              channelId,
+              oldContent: this.extractContent(veilContent),
+              newContent: discordMsg.content
+            }
+          }
+        });
+      }
+    }
+    
+    if (deletedCount > 0 || editedCount > 0) {
+      console.log(`[DiscordHistorySync] Detected ${editedCount} edits, ${deletedCount} deletions while offline`);
+    }
+    
+    return deltas;
+  }
+  
+  private extractContent(fullContent: string): string {
+    // Extract message content from "Author: content" format
+    const match = fullContent.match(/^[^:]+: (.+)$/);
+    return match ? match[1] : fullContent;
   }
 }
 
@@ -116,33 +252,45 @@ class DiscordMessageReceptor extends BaseReceptor {
 class DiscordMessageUpdateReceptor extends BaseReceptor {
   topics = ['discord:messageUpdate'];
   
-  transform(event: SpaceEvent, state: ReadonlyVEILState): Facet[] {
+  transform(event: SpaceEvent, state: ReadonlyVEILState): any[] {
     const payload = event.payload as any;
     const { messageId, content, oldContent, author, channelName } = payload;
     
     console.log(`[DiscordMessageUpdateReceptor] Message ${messageId} edited by ${author}`);
     
-    const facets: Facet[] = [];
+    const deltas: any[] = [];
     const facetId = `discord-msg-${messageId}`;
     
     // Check if the message facet exists
     if (state.facets.has(facetId)) {
+      // Rewrite the message facet with new content (exotemporal - updating to reality)
+      deltas.push({
+        type: 'rewriteFacet',
+        id: facetId,
+        changes: {
+          content: `${author}: ${content}`
+        }
+      });
+      
       // Create an event facet for the edit
-      facets.push({
-        id: `discord-edit-${messageId}-${Date.now()}`,
-        type: 'event',
-        content: `${author} edited their message in #${channelName}`,
-        eventType: 'discord-message-edited',
-        attributes: {
-          messageId,
-          oldContent,
-          newContent: content,
-          author
+      deltas.push({
+        type: 'addFacet',
+        facet: {
+          id: `discord-edit-${messageId}-${Date.now()}`,
+          type: 'event',
+          content: `${author} edited their message in #${channelName}`,
+          eventType: 'discord-message-edited',
+          attributes: {
+            messageId,
+            oldContent,
+            newContent: content,
+            author
+          }
         }
       });
     }
     
-    return facets;
+    return deltas;
   }
 }
 
@@ -152,32 +300,41 @@ class DiscordMessageUpdateReceptor extends BaseReceptor {
 class DiscordMessageDeleteReceptor extends BaseReceptor {
   topics = ['discord:messageDelete'];
   
-  transform(event: SpaceEvent, state: ReadonlyVEILState): Facet[] {
+  transform(event: SpaceEvent, state: ReadonlyVEILState): any[] {
     const payload = event.payload as any;
     const { messageId, author, channelName } = payload;
     
     console.log(`[DiscordMessageDeleteReceptor] Message ${messageId} deleted`);
     
-    const facets: Facet[] = [];
+    const deltas: any[] = [];
     const facetId = `discord-msg-${messageId}`;
     
     // Check if the message facet exists
     if (state.facets.has(facetId)) {
+      // Remove the message facet (exotemporal - updating to reality)
+      deltas.push({
+        type: 'removeFacet',
+        id: facetId
+      });
+      
       // Create an event facet for the deletion
-      facets.push({
-        id: `discord-delete-${messageId}-${Date.now()}`,
-        type: 'event',
-        content: `${author || 'Someone'} deleted their message in #${channelName || 'a channel'}`,
-        eventType: 'discord-message-deleted',
-        attributes: {
-          messageId,
-          author,
-          deletedFacetId: facetId
+      deltas.push({
+        type: 'addFacet',
+        facet: {
+          id: `discord-delete-${messageId}-${Date.now()}`,
+          type: 'event',
+          content: `${author || 'Someone'} deleted their message in #${channelName || 'a channel'}`,
+          eventType: 'discord-message-deleted',
+          attributes: {
+            messageId,
+            author,
+            deletedFacetId: facetId
+          }
         }
       });
     }
     
-    return facets;
+    return deltas;
   }
 }
 
@@ -477,12 +634,8 @@ export class DiscordApplication implements ConnectomeApplication {
     agentElem.addComponent(agentComponent);
     }
     
-    // Add RETM components for Discord integration
-    space.addReceptor(new DiscordConnectedReceptor());
-    space.addReceptor(new DiscordMessageReceptor());
-    space.addReceptor(new DiscordMessageUpdateReceptor());
-    space.addReceptor(new DiscordMessageDeleteReceptor());
-    space.addEffector(new DiscordSpeechEffector(discordElem));
+    // Note: RETM components (receptors/effectors) are registered in onStart()
+    // so they're available both on fresh start and restore
     
     if (this.config.discord.autoJoinChannels && this.config.discord.autoJoinChannels.length > 0 && discordElem) {
       console.log('➕ Adding auto-join effector for channels:', this.config.discord.autoJoinChannels);
@@ -528,6 +681,18 @@ export class DiscordApplication implements ConnectomeApplication {
   async onStart(space: Space, veilState: VEILStateManager): Promise<void> {
     console.log('🚀 Discord application started!');
     
+    // Register Discord RETM components (runs both on fresh start and restore!)
+    const discordElem = space.children.find(c => c.name === 'discord');
+    console.log('➕ Registering Discord Receptors and Effectors');
+    space.addReceptor(new DiscordConnectedReceptor());
+    space.addReceptor(new DiscordMessageReceptor());
+    space.addReceptor(new DiscordHistorySyncReceptor());  // Detects offline edits/deletes
+    space.addReceptor(new DiscordMessageUpdateReceptor());
+    space.addReceptor(new DiscordMessageDeleteReceptor());
+    if (discordElem) {
+      space.addEffector(new DiscordSpeechEffector(discordElem));
+    }
+    
     // Register RETM components for agent processing
     // Find the agent element and component
     const agentElem = space.children.find(child => child.name === 'discord-agent');
@@ -547,6 +712,43 @@ export class DiscordApplication implements ConnectomeApplication {
   
   async onRestore(space: Space, veilState: VEILStateManager): Promise<void> {
     console.log('♻️ Discord application restored from snapshot');
+    
+    // Reconnect Discord afferent
+    const discordElem = space.children.find(c => c.name === 'discord');
+    if (discordElem) {
+      const axonLoader = discordElem.getComponents(AxonLoaderComponent)[0];
+      
+      if (axonLoader && (axonLoader as any).axonUrl) {
+        console.log('🔄 Reconnecting Discord afferent after restoration...');
+        try {
+          // Reload the component
+          await axonLoader.connect((axonLoader as any).axonUrl);
+          
+          // Get the loaded afferent and start it
+          const afferent = (axonLoader as any).loadedComponent;
+          if (afferent && typeof afferent.start === 'function') {
+            console.log('▶️ Starting Discord afferent...');
+            await afferent.start();
+            
+            // Wait for connection and authentication
+            await new Promise(resolve => setTimeout(resolve, 2000));
+            
+            // Rejoin channels after reconnection
+            if (this.config.discord.autoJoinChannels) {
+              for (const channelId of this.config.discord.autoJoinChannels) {
+                console.log(`📢 Rejoining channel: ${channelId}`);
+                if (afferent.join && typeof afferent.join === 'function') {
+                  await afferent.join({ channelId, scrollback: 50 });
+                }
+              }
+            }
+          }
+        } catch (e) {
+          console.log('⚠️ Failed to reconnect Discord afferent:', e);
+        }
+      }
+    }
+    
     // No activation needed - Discord messages will trigger the agent
   }
 }

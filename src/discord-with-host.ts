@@ -86,7 +86,8 @@ async function main() {
   const host = new ConnectomeHost({
     persistence: {
       enabled: true,
-      storageDir: './discord-host-state'
+      storageDir: './discord-host-state',
+      snapshotInterval: 5  // Low interval for testing
     },
     debug: {
       enabled: true,

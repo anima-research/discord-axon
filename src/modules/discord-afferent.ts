@@ -37,33 +37,18 @@ export function createModule(env: IAxonEnvironmentV2): any {
     @external('secret:discord.token')
     private botToken?: string;
     
-    @persistent
-    private guildId: string = '';
-    
-    @persistent
-    private guildName: string = '';
-    
-    @persistent
-    private agentName: string = 'Connectome Agent';
-    
-    @persistent
-    private botUserId: string = '';
-    
-    @persistent
-    private joinedChannels: string[] = [];
-    
-    @persistent
-    private channelNames: Record<string, string> = {}; // channelId -> channelName
-    
-    @persistent
-    private lastRead: Record<string, string> = {};
-    
+    // Runtime state only (rebuilt from VEIL on mount)
     private ws?: any;
     private reconnectTimeout?: any;
     private shouldReconnect = true;
     private connectionAttempts = 0;
-    private processedMessages = new Set<string>();
+    private processedMessagesCache = new Set<string>();
     private initialized = false;
+    
+    // Cache for frequently accessed state (rebuilt from component-state in VEIL)
+    private joinedChannelsCache: string[] = [];
+    private channelNamesCache: Record<string, string> = {};
+    private lastReadCache: Record<string, string> = {};
     
     // Called by AxonLoader when parameters are provided
     setConnectionParams(params: any): void {
@@ -109,9 +94,19 @@ export function createModule(env: IAxonEnvironmentV2): any {
     protected async onInitialize(): Promise<void> {
       console.log('[DiscordAfferent] Initializing...');
       
-      // Set config from context
-      this.guildId = this.context.config.guild;
-      this.agentName = this.context.config.agent;
+      // Read state from VEIL component-state facet
+      const componentState = this.getComponentState();
+      
+      // Populate caches from VEIL state
+      this.joinedChannelsCache = componentState.joinedChannels || [];
+      this.channelNamesCache = componentState.channelNames || {};
+      this.lastReadCache = componentState.lastRead || {};
+      
+      console.log('[DiscordAfferent] Loaded from VEIL:', {
+        joinedChannels: this.joinedChannelsCache.length,
+        channelNames: Object.keys(this.channelNamesCache).length,
+        lastRead: Object.keys(this.lastReadCache).length
+      });
     }
     
     protected async onStart(): Promise<void> {
@@ -152,11 +147,26 @@ export function createModule(env: IAxonEnvironmentV2): any {
             type: 'join',
             channelId: command.channelId,
             scrollback: command.scrollback || 50,
-            lastMessageId: command.lastMessageId || this.lastRead[command.channelId]
+            lastMessageId: command.lastMessageId || this.lastReadCache[command.channelId]
           }));
           
-          if (!this.joinedChannels.includes(command.channelId)) {
-            this.joinedChannels.push(command.channelId);
+          if (!this.joinedChannelsCache.includes(command.channelId)) {
+            this.joinedChannelsCache.push(command.channelId);
+            // Persist to VEIL (endotemporal evolution)
+            this.emitFacet({
+              id: `discord-join-${command.channelId}-${Date.now()}`,
+              type: 'state-change',
+              targetFacetIds: [`component-state:${this.getComponentId()}`],
+              state: {
+                changes: {
+                  joinedChannels: { 
+                    old: this.joinedChannelsCache.slice(0, -1), 
+                    new: this.joinedChannelsCache 
+                  }
+                }
+              },
+              ephemeral: true
+            });
           }
           break;
           
@@ -166,7 +176,7 @@ export function createModule(env: IAxonEnvironmentV2): any {
             channelId: command.channelId
           }));
           
-          this.joinedChannels = this.joinedChannels.filter(id => id !== command.channelId);
+          this.joinedChannelsCache = this.joinedChannelsCache.filter(id => id !== command.channelId);
           break;
           
         case 'send':
@@ -200,11 +210,12 @@ export function createModule(env: IAxonEnvironmentV2): any {
         
         this.ws.onopen = () => {
           console.log('[DiscordAfferent] WebSocket connected, authenticating...');
+          const config = this.getComponentState();
           this.ws.send(JSON.stringify({
             type: 'auth',
             token: this.botToken,
-            guild: this.guildId,
-            agent: this.agentName
+            guild: config.guild || config.guildId,
+            agent: config.agent || config.agentName
           }));
         };
         
@@ -243,9 +254,7 @@ export function createModule(env: IAxonEnvironmentV2): any {
         case 'authenticated':
           this.connectionAttempts = 0;
           
-          if (msg.botUserId) {
-            this.botUserId = msg.botUserId;
-          }
+          const config = this.getComponentState();
           
           // Emit connection event
           this.emit({
@@ -253,9 +262,9 @@ export function createModule(env: IAxonEnvironmentV2): any {
             source: { elementId: this.element?.id || 'discord', elementPath: [] },
             timestamp: Date.now(),
             payload: {
-              agentName: this.agentName,
-              guildId: this.guildId,
-              botUserId: this.botUserId,
+              agentName: config.agent || config.agentName,
+              guildId: config.guild || config.guildId,
+              botUserId: msg.botUserId,
               reconnect: this.connectionAttempts > 1
             }
           });
@@ -289,11 +298,11 @@ export function createModule(env: IAxonEnvironmentV2): any {
           
         case 'joined':
           if (msg.channel?.id) {
-            if (!this.joinedChannels.includes(msg.channel.id)) {
-              this.joinedChannels.push(msg.channel.id);
+            if (!this.joinedChannelsCache.includes(msg.channel.id)) {
+              this.joinedChannelsCache.push(msg.channel.id);
             }
             if (msg.channel.name) {
-              this.channelNames[msg.channel.id] = msg.channel.name;
+              this.channelNamesCache[msg.channel.id] = msg.channel.name;
             }
           }
           
@@ -306,7 +315,7 @@ export function createModule(env: IAxonEnvironmentV2): any {
           break;
           
         case 'left':
-          this.joinedChannels = this.joinedChannels.filter(id => id !== msg.channelId);
+          this.joinedChannelsCache = this.joinedChannelsCache.filter(id => id !== msg.channelId);
           
           this.emit({
             topic: 'discord:channel-left',
@@ -319,8 +328,8 @@ export function createModule(env: IAxonEnvironmentV2): any {
         case 'message_sent':
           // Update tracking
           if (msg.channelId && msg.messageId) {
-            this.lastRead[msg.channelId] = msg.messageId;
-            this.processedMessages.add(msg.messageId);
+            this.lastReadCache[msg.channelId] = msg.messageId;
+            this.processedMessagesCache.add(msg.messageId);
           }
           break;
           
@@ -336,17 +345,35 @@ export function createModule(env: IAxonEnvironmentV2): any {
       
       console.log(`[DiscordAfferent] Received history for ${channelName}: ${messages.length} messages`);
       
-      // Update metadata
-      if (guildName && guildId === this.guildId) {
-        this.guildName = guildName;
-      }
-      
+      // Update metadata cache
       if (channelName && channelId) {
-        this.channelNames[channelId] = channelName;
+        this.channelNamesCache[channelId] = channelName;
       }
       
-      // Filter out already-seen messages
-      const lastReadId = this.lastRead[channelId];
+      // Build message ID map for quick lookup
+      const historyMessageIds = new Set(messages.map((m: any) => m.messageId));
+      const historyByMessageId = new Map(messages.map((m: any) => [m.messageId, m]));
+      
+      // Detect offline edits and deletes by comparing to VEIL (if accessible)
+      // Note: This requires access to VEIL state, which afferents don't have directly
+      // We'll emit events that a Receptor can process to detect changes
+      this.emit({
+        topic: 'discord:history-sync',
+        source: { elementId: this.element?.id || 'discord', elementPath: [] },
+        timestamp: Date.now(),
+        payload: {
+          channelId,
+          channelName,
+          messages: messages.map((m: any) => ({
+            messageId: m.messageId,
+            content: m.content,
+            author: m.author
+          }))
+        }
+      });
+      
+      // Filter out already-seen messages (using cache)
+      const lastReadId = this.lastReadCache[channelId];
       let newMessages = messages;
       
       if (lastReadId) {
@@ -362,7 +389,7 @@ export function createModule(env: IAxonEnvironmentV2): any {
         console.log(`[DiscordAfferent] Filtered ${messages.length - newMessages.length} already-read messages`);
       }
       
-      // Emit each message as an event
+      // Emit each new message as an event
       const streamId = this.buildStreamId(channelName, guildName);
       
       for (const message of newMessages) {
@@ -378,13 +405,13 @@ export function createModule(env: IAxonEnvironmentV2): any {
           }
         });
         
-        this.processedMessages.add(message.messageId);
+        this.processedMessagesCache.add(message.messageId);
       }
       
-      // Update lastRead
+      // Update lastRead cache
       if (messages.length > 0) {
         const lastMessage = messages[messages.length - 1];
-        this.lastRead[channelId] = lastMessage.messageId;
+        this.lastReadCache[channelId] = lastMessage.messageId;
       }
       
       // Emit history complete event
@@ -401,18 +428,14 @@ export function createModule(env: IAxonEnvironmentV2): any {
     }
     
     private handleLiveMessage(msg: any): void {
-      if (this.processedMessages.has(msg.messageId)) {
+      if (this.processedMessagesCache.has(msg.messageId)) {
         console.log(`[DiscordAfferent] Skipping duplicate message ${msg.messageId}`);
         return;
       }
       
-      // Update metadata
-      if (msg.guildName && msg.guildId === this.guildId) {
-        this.guildName = msg.guildName;
-      }
-      
+      // Update metadata cache
       if (msg.channelName && msg.channelId) {
-        this.channelNames[msg.channelId] = msg.channelName;
+        this.channelNamesCache[msg.channelId] = msg.channelName;
       }
       
       // Build stream ID
@@ -430,9 +453,9 @@ export function createModule(env: IAxonEnvironmentV2): any {
         }
       });
       
-      // Update tracking
-      this.lastRead[msg.channelId] = msg.messageId;
-      this.processedMessages.add(msg.messageId);
+      // Update tracking cache
+      this.lastReadCache[msg.channelId] = msg.messageId;
+      this.processedMessagesCache.add(msg.messageId);
     }
     
     private buildStreamId(channelName?: string, guildName?: string): string {
@@ -507,15 +530,8 @@ export function createModule(env: IAxonEnvironmentV2): any {
       });
     }
     
-    static persistentProperties = [
-      { propertyKey: 'guildId' },
-      { propertyKey: 'guildName' },
-      { propertyKey: 'agentName' },
-      { propertyKey: 'botUserId' },
-      { propertyKey: 'joinedChannels' },
-      { propertyKey: 'channelNames' },
-      { propertyKey: 'lastRead' }
-    ];
+    // No persistent properties needed - all state in VEIL!
+    // Runtime caches rebuilt from component-state on mount
     
     static externalResources = [
       { propertyKey: 'botToken', resourceId: 'secret:discord.token' }
