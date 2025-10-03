@@ -76,22 +76,23 @@ class DiscordMessageReceptor extends BaseReceptor {
     
     const deltas: any[] = [];
     
-    // Create message facet
+    // Create message facet (eventType must be in state for proper serialization!)
     deltas.push({
       type: 'addFacet',
       facet: {
         id: `discord-msg-${messageId}`,
         type: 'event',
         content: `${author}: ${content}`,
-        eventType: 'discord-message',
+        state: {
+          source: 'discord',
+          eventType: 'discord-message',
+          metadata: { channelName, author, isHistory }
+        },
+        streamId,
+        streamType,
         attributes: {
           channelId,
-          channelName,
-          author,
-          messageId,
-          streamId,
-          streamType,
-          isHistory
+          messageId
         }
       }
     });
@@ -162,14 +163,22 @@ class DiscordHistorySyncReceptor extends BaseReceptor {
     const discordMessages = new Map(messages.map((m: any) => [m.messageId, m]));
     
     // Find all Discord message facets for this channel in VEIL
+    console.log(`[DiscordHistorySync] Total facets in VEIL: ${state.facets.size}`);
+    const eventFacets = Array.from(state.facets.values()).filter(f => f.type === 'event');
+    console.log(`[DiscordHistorySync] Event facets: ${eventFacets.length}`);
+    const eventTypes = new Set(eventFacets.map(f => (f as any).state?.eventType).filter(Boolean));
+    console.log(`[DiscordHistorySync] Event types found: ${Array.from(eventTypes).join(', ')}`);
+    
     const veilMessages = Array.from(state.facets.values()).filter(
       f => f.type === 'event' && 
-           (f as any).eventType === 'discord-message' &&
+           (f as any).state?.eventType === 'discord-message' &&  // eventType is in state!
            (f as any).attributes?.channelId === channelId
     );
     
     let deletedCount = 0;
     let editedCount = 0;
+    
+    console.log(`[DiscordHistorySync] Found ${veilMessages.length} discord-message facets for this channel`);
     
     for (const veilMsg of veilMessages) {
       const messageId = (veilMsg as any).attributes.messageId;
@@ -202,6 +211,8 @@ class DiscordHistorySyncReceptor extends BaseReceptor {
       } else if (this.extractContent(veilContent) !== discordMsg.content) {
         // Message was EDITED offline
         console.log(`[DiscordHistorySync] Message ${messageId} edited offline`);
+        console.log(`  VEIL: "${this.extractContent(veilContent)}"`);
+        console.log(`  Discord: "${discordMsg.content}"`);
         editedCount++;
         
         // Rewrite the message facet (exotemporal - updating to current reality)
