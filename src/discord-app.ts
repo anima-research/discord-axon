@@ -45,7 +45,10 @@ class DiscordConnectedReceptor extends BaseReceptor {
         id: `discord-connected-${Date.now()}`,
         type: 'event',
         content: 'Discord connected',
-        eventType: 'discord-connected',
+        state: {
+          source: 'discord',
+          eventType: 'discord-connected'
+        },
         attributes: event.payload as Record<string, any>
       }
     }];
@@ -365,7 +368,7 @@ class DiscordAutoJoinEffector extends BaseEffector {
     // Check if we have a discord:connected facet
     const hasConnected = changes.some(
       c => c.type === 'added' && c.facet.type === 'event' && 
-      (c.facet as any).eventType === 'discord-connected'
+      (c.facet as any).state?.eventType === 'discord-connected'
     );
     
     if (!hasConnected) {
@@ -692,9 +695,9 @@ export class DiscordApplication implements ConnectomeApplication {
   async onStart(space: Space, veilState: VEILStateManager): Promise<void> {
     console.log('🚀 Discord application started!');
     
-    // Register Discord RETM components (runs both on fresh start and restore!)
-    const discordElem = space.children.find(c => c.name === 'discord');
+    // Register Discord RETM components (application-level, not element-specific)
     console.log('➕ Registering Discord Receptors and Effectors');
+    const discordElem = space.children.find(c => c.name === 'discord');
     space.addReceptor(new DiscordConnectedReceptor());
     space.addReceptor(new DiscordMessageReceptor());
     space.addReceptor(new DiscordHistorySyncReceptor());  // Detects offline edits/deletes
