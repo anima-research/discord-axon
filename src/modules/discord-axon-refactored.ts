@@ -163,39 +163,95 @@ export function createModule(env: IAxonEnvironment): typeof env.InteractiveCompo
           channelId: { type: 'string', required: true },
           message: { type: 'string', required: true }
         }
+      },
+      'registerSlashCommand': {
+        description: 'Register a slash command',
+        parameters: {
+          name: { type: 'string', required: true },
+          description: { type: 'string', required: true },
+          options: { type: 'array', required: false }
+        }
+      },
+      'unregisterSlashCommand': {
+        description: 'Unregister a slash command',
+        parameters: {
+          name: { type: 'string', required: true }
+        }
+      },
+      'sendTyping': {
+        description: 'Send typing indicator to a channel',
+        parameters: {
+          channelId: { type: 'string', required: true }
+        }
+      },
+      'sendEmbed': {
+        description: 'Send a rich embed with optional buttons',
+        parameters: {
+          channelId: { type: 'string', required: true },
+          embed: { type: 'object', required: true },
+          buttons: { type: 'array', required: false }
+        }
+      },
+      'replyToInteraction': {
+        description: 'Reply to a slash command or button interaction',
+        parameters: {
+          interactionId: { type: 'string', required: true },
+          content: { type: 'string', required: false },
+          embed: { type: 'object', required: false },
+          ephemeral: { type: 'boolean', required: false }
+        }
       }
     };
-    
+
     constructor() {
       super();
-      
+
       // Register action handlers
       this.registerAction('join', this.join.bind(this));
       this.registerAction('leave', this.leave.bind(this));
       this.registerAction('send', this.send.bind(this));
+      this.registerAction('registerSlashCommand', this.registerSlashCommand.bind(this));
+      this.registerAction('unregisterSlashCommand', this.unregisterSlashCommand.bind(this));
+      this.registerAction('sendTyping', this.sendTyping.bind(this));
+      this.registerAction('sendEmbed', this.sendEmbed.bind(this));
+      this.registerAction('replyToInteraction', this.replyToInteraction.bind(this));
     }
     
     // Called by AxonElement when parameters are provided
     setConnectionParams(params: DiscordConnectionParams): void {
       console.log('[Discord] Setting connection params:', params);
-      
+
       this.connectionParams = params;
-      
+
       if (params.host && params.path) {
         this.serverUrl = `ws://${params.host}${params.path}`;
       }
-      
+
       if (params.guild) {
         this.guildId = params.guild;
       }
-      
+
       if (params.agent) {
         this.agentName = params.agent;
       }
-      
-      // Token is handled separately via external injection
-      
+
+      // Accept token via params as fallback if not provided via external injection
+      if (params.token && !this.botToken) {
+        this.botToken = params.token;
+      }
+
       console.log('[Discord] Params set - serverUrl:', this.serverUrl, 'botToken:', this.botToken ? 'set' : 'not set');
+
+      // If we have both serverUrl and botToken after setting params, trigger connection immediately
+      if (this.serverUrl && this.botToken && this.connectionState === 'disconnected') {
+        console.log('[Discord] Params complete, initiating connection');
+        // Use setImmediate to avoid blocking the current call stack
+        setImmediate(() => {
+          this.startConnection().catch(err => {
+            console.error('[Discord] Connection failed:', err);
+          });
+        });
+      }
     }
     
     /**
@@ -218,12 +274,11 @@ export function createModule(env: IAxonEnvironment): typeof env.InteractiveCompo
     
     async onMount(): Promise<void> {
       console.log('[Discord] Component mounted');
-      
+
       // Subscribe to relevant events
-      this.element.subscribe('frame:start');
-      // frame:end removed for V2 compatibility
+      // NOTE: frame:start events are not emitted in current RETM architecture
       this.element.subscribe('element:action');
-      
+
       // Subscribe to control panel events
       this.element.subscribe('discord:request-guilds');
       this.element.subscribe('discord:request-channels');
@@ -232,10 +287,7 @@ export function createModule(env: IAxonEnvironment): typeof env.InteractiveCompo
     }
     
     async handleEvent(event: ISpaceEvent): Promise<void> {
-      // Note: In RETM architecture, handleEvent is not called for subscribed events
-      // This method is kept for compatibility but may not be invoked
       console.log(`[Discord] handleEvent called with topic: ${event.topic}`);
-      
       if (event.topic === 'discord:request-guilds') {
         await this.handleRequestGuilds();
       } else if (event.topic === 'discord:request-channels') {
@@ -249,7 +301,7 @@ export function createModule(env: IAxonEnvironment): typeof env.InteractiveCompo
     
     onReferencesResolved(): void {
       console.log('🔌 Discord onReferencesResolved - token:', this.botToken ? 'SET' : 'NOT SET', 'serverUrl:', this.serverUrl);
-      
+
       if (this.serverUrl && this.botToken && this.connectionState === 'disconnected') {
         // In RETM architecture, directly trigger connection instead of waiting for frame:start
         console.log('🔌 Discord connecting immediately after references resolved');
@@ -344,7 +396,6 @@ export function createModule(env: IAxonEnvironment): typeof env.InteractiveCompo
     
     private handleAxonMessage(msg: any): void {
       console.log('[Discord] Received message:', msg);
-      
       // In RETM architecture, process messages immediately
       // The component will emit events as needed
       this.processAxonMessage(msg);
@@ -448,7 +499,43 @@ export function createModule(env: IAxonEnvironment): typeof env.InteractiveCompo
             timestamp: Date.now()
           });
           break;
-          
+
+        case 'interaction:slash-command':
+          console.log('[Discord] Slash command interaction:', msg.payload);
+          this.element.emit({
+            topic: 'discord:slash-command',
+            payload: msg.payload,
+            timestamp: Date.now()
+          });
+          break;
+
+        case 'interaction:button':
+          console.log('[Discord] Button interaction:', msg.payload);
+          this.element.emit({
+            topic: 'discord:button-click',
+            payload: msg.payload,
+            timestamp: Date.now()
+          });
+          break;
+
+        case 'slash-command-registered':
+          console.log('[Discord] Slash command registered:', msg.name);
+          this.element.emit({
+            topic: 'discord:slash-command-registered',
+            payload: { name: msg.name },
+            timestamp: Date.now()
+          });
+          break;
+
+        case 'slash-command-unregistered':
+          console.log('[Discord] Slash command unregistered:', msg.name);
+          this.element.emit({
+            topic: 'discord:slash-command-unregistered',
+            payload: { name: msg.name },
+            timestamp: Date.now()
+          });
+          break;
+
         default:
           console.warn('[Discord] Unknown message type:', msg.type);
       }
@@ -844,24 +931,106 @@ export function createModule(env: IAxonEnvironment): typeof env.InteractiveCompo
     
     async send(params: { channelId: string; message: string }): Promise<void> {
       const { channelId, message } = params;
-      
+
       if (!this.ws || this.connectionState !== 'connected') {
         throw new Error('Not connected to Discord');
       }
-      
+
       console.log(`[Discord] Sending message to ${channelId}: ${message}`);
-      
+
       this.ws.send(JSON.stringify({
         type: 'send',
         channelId,
         message
       }));
-      
+
       // Note: We don't create an action facet here because if this was triggered
       // by an agent's speak operation, there's already a speech facet for it.
       // Creating another facet would be redundant noise in the VEIL state.
     }
-    
+
+    async registerSlashCommand(params: { name: string; description: string; options?: any[] }): Promise<void> {
+      const { name, description, options = [] } = params;
+
+      if (!this.ws || this.connectionState !== 'connected') {
+        throw new Error('Not connected to Discord');
+      }
+
+      console.log(`[Discord] Registering slash command: /${name}`);
+
+      this.ws.send(JSON.stringify({
+        type: 'registerSlashCommand',
+        name,
+        description,
+        options
+      }));
+    }
+
+    async unregisterSlashCommand(params: { name: string }): Promise<void> {
+      const { name } = params;
+
+      if (!this.ws || this.connectionState !== 'connected') {
+        throw new Error('Not connected to Discord');
+      }
+
+      console.log(`[Discord] Unregistering slash command: /${name}`);
+
+      this.ws.send(JSON.stringify({
+        type: 'unregisterSlashCommand',
+        name
+      }));
+    }
+
+    async sendTyping(params: { channelId: string }): Promise<void> {
+      const { channelId } = params;
+
+      if (!this.ws || this.connectionState !== 'connected') {
+        throw new Error('Not connected to Discord');
+      }
+
+      console.log(`[Discord] Sending typing indicator to ${channelId}`);
+
+      this.ws.send(JSON.stringify({
+        type: 'sendTyping',
+        channelId
+      }));
+    }
+
+    async sendEmbed(params: { channelId: string; embed: any; buttons?: any[] }): Promise<void> {
+      const { channelId, embed, buttons = [] } = params;
+
+      if (!this.ws || this.connectionState !== 'connected') {
+        throw new Error('Not connected to Discord');
+      }
+
+      console.log(`[Discord] Sending embed to ${channelId}`);
+
+      this.ws.send(JSON.stringify({
+        type: 'sendEmbed',
+        channelId,
+        embed,
+        buttons
+      }));
+    }
+
+    async replyToInteraction(params: { interactionId: string; content?: string; embed?: any; ephemeral?: boolean }): Promise<void> {
+      const { interactionId, content, embed, ephemeral = false } = params;
+
+      if (!this.ws || this.connectionState !== 'connected') {
+        throw new Error('Not connected to Discord');
+      }
+
+      console.log(`[Discord] Replying to interaction ${interactionId}`);
+
+      this.ws.send(JSON.stringify({
+        type: 'replyToInteraction',
+        interactionId,
+        content,
+        embed,
+        ephemeral
+      }));
+    }
+
     // Control panel handlers
     private async handleRequestGuilds(): Promise<void> {
       console.log('[Discord] Requesting guilds list');
