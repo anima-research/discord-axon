@@ -19,11 +19,20 @@ interface DiscordConfig {
 }
 
 interface DiscordCommand {
-  type: 'join' | 'leave' | 'send';
-  channelId: string;
+  type: 'join' | 'leave' | 'send' | 'registerSlashCommand' | 'unregisterSlashCommand' | 'sendTyping' | 'replyToInteraction';
+  channelId?: string;
   message?: string;
   scrollback?: number;
   lastMessageId?: string;
+  // Slash command params
+  commandName?: string;
+  description?: string;
+  options?: any[];
+  // Interaction params
+  interactionId?: string;
+  content?: string;
+  embed?: any;
+  ephemeral?: boolean;
 }
 
 // Export flag to signal this is an afferent module
@@ -34,9 +43,9 @@ export function createModule(env: IAxonEnvironmentV2): any {
   
   @persistable(1)
   class DiscordAfferent extends BaseAfferent<DiscordConfig, DiscordCommand> {
-    @external('secret:discord.token')
+    // Bot token stored directly from params (not via @external since it comes from URL)
     private botToken?: string;
-    
+
     // Runtime state only (rebuilt from VEIL on mount)
     private ws?: any;
     private reconnectTimeout?: any;
@@ -44,19 +53,24 @@ export function createModule(env: IAxonEnvironmentV2): any {
     private connectionAttempts = 0;
     private processedMessagesCache = new Set<string>();
     private initialized = false;
-    
+
     // Cache for frequently accessed state (rebuilt from component-state in VEIL)
     private joinedChannelsCache: string[] = [];
     private channelNamesCache: Record<string, string> = {};
     private lastReadCache: Record<string, string> = {};
-    
+
     // Called by AxonLoader when parameters are provided
-    setConnectionParams(params: any): void {
+    async setConnectionParams(params: any): Promise<void> {
       console.log('[DiscordAfferent] Setting connection params:', params);
-      
-      // Store params for later initialization
+
+      // Store bot token from params
+      if (params.token) {
+        this.botToken = params.token;
+        console.log('[DiscordAfferent] Bot token received from params');
+      }
+
+      // Create context for AXON-loaded afferents
       if (!this.context) {
-        // Create a basic context for AXON-loaded afferents
         (this as any).context = {
           config: {
             serverUrl: params.host && params.path ? `ws://${params.host}${params.path}` : '',
@@ -75,19 +89,17 @@ export function createModule(env: IAxonEnvironmentV2): any {
           }
         };
       }
-    }
-    
-    // Called after external resources are resolved
-    async onReferencesResolved(): Promise<void> {
-      console.log('[DiscordAfferent] onReferencesResolved - token:', this.botToken ? 'SET' : 'NOT SET');
-      
+
+      // Initialize and start immediately since we have everything we need
       if (!this.initialized && this.context && this.botToken) {
         console.log('[DiscordAfferent] Initializing and starting...');
         this.initialized = true;
-        
+
         // Initialize and start the afferent
         await this.initialize(this.context);
         await this.start();
+      } else {
+        console.warn('[DiscordAfferent] Cannot initialize - missing context or token');
       }
     }
     
@@ -135,23 +147,23 @@ export function createModule(env: IAxonEnvironmentV2): any {
     
     protected async onCommand(command: DiscordCommand): Promise<void> {
       console.log(`[DiscordAfferent] Processing command: ${command.type}`);
-      
+
       if (!this.ws) {
         console.warn('[DiscordAfferent] Cannot process command - not connected');
         return;
       }
-      
+
       switch (command.type) {
         case 'join':
           this.ws.send(JSON.stringify({
             type: 'join',
             channelId: command.channelId,
             scrollback: command.scrollback || 50,
-            lastMessageId: command.lastMessageId || this.lastReadCache[command.channelId]
+            lastMessageId: command.lastMessageId || this.lastReadCache[command.channelId!]
           }));
-          
-          if (!this.joinedChannelsCache.includes(command.channelId)) {
-            this.joinedChannelsCache.push(command.channelId);
+
+          if (!this.joinedChannelsCache.includes(command.channelId!)) {
+            this.joinedChannelsCache.push(command.channelId!);
             // Persist to VEIL (endotemporal evolution)
             this.emitFacet({
               id: `discord-join-${command.channelId}-${Date.now()}`,
@@ -159,9 +171,9 @@ export function createModule(env: IAxonEnvironmentV2): any {
               targetFacetIds: [`component-state:${this.getComponentId()}`],
               state: {
                 changes: {
-                  joinedChannels: { 
-                    old: this.joinedChannelsCache.slice(0, -1), 
-                    new: this.joinedChannelsCache 
+                  joinedChannels: {
+                    old: this.joinedChannelsCache.slice(0, -1),
+                    new: this.joinedChannelsCache
                   }
                 }
               },
@@ -169,26 +181,79 @@ export function createModule(env: IAxonEnvironmentV2): any {
             });
           }
           break;
-          
+
         case 'leave':
           this.ws.send(JSON.stringify({
             type: 'leave',
             channelId: command.channelId
           }));
-          
+
           this.joinedChannelsCache = this.joinedChannelsCache.filter(id => id !== command.channelId);
           break;
-          
+
         case 'send':
           if (!command.message) {
             console.warn('[DiscordAfferent] Send command missing message');
             return;
           }
-          
+
           this.ws.send(JSON.stringify({
             type: 'send',
             channelId: command.channelId,
             message: command.message
+          }));
+          break;
+
+        case 'registerSlashCommand':
+          if (!command.commandName || !command.description) {
+            console.warn('[DiscordAfferent] registerSlashCommand missing required params');
+            return;
+          }
+
+          this.ws.send(JSON.stringify({
+            type: 'registerSlashCommand',
+            name: command.commandName,
+            description: command.description,
+            options: command.options || []
+          }));
+          break;
+
+        case 'unregisterSlashCommand':
+          if (!command.commandName) {
+            console.warn('[DiscordAfferent] unregisterSlashCommand missing commandName');
+            return;
+          }
+
+          this.ws.send(JSON.stringify({
+            type: 'unregisterSlashCommand',
+            name: command.commandName
+          }));
+          break;
+
+        case 'sendTyping':
+          if (!command.channelId) {
+            console.warn('[DiscordAfferent] sendTyping missing channelId');
+            return;
+          }
+
+          this.ws.send(JSON.stringify({
+            type: 'sendTyping',
+            channelId: command.channelId
+          }));
+          break;
+
+        case 'replyToInteraction':
+          if (!command.interactionId) {
+            console.warn('[DiscordAfferent] replyToInteraction missing interactionId');
+            return;
+          }
+
+          this.ws.send(JSON.stringify({
+            type: 'replyToInteraction',
+            interactionId: command.interactionId,
+            content: command.content,
+            embed: command.embed,
+            ephemeral: command.ephemeral || false
           }));
           break;
       }
@@ -210,7 +275,7 @@ export function createModule(env: IAxonEnvironmentV2): any {
         
         this.ws.onopen = () => {
           console.log('[DiscordAfferent] WebSocket connected, authenticating...');
-          const config = this.getComponentState();
+          const config = this.context.config;
           this.ws.send(JSON.stringify({
             type: 'auth',
             token: this.botToken,
@@ -332,7 +397,33 @@ export function createModule(env: IAxonEnvironmentV2): any {
             this.processedMessagesCache.add(msg.messageId);
           }
           break;
-          
+
+        case 'interaction:slash-command':
+          this.emit({
+            topic: 'discord:slash-command',
+            source: { elementId: this.element?.id || 'discord', elementPath: [] },
+            timestamp: Date.now(),
+            payload: msg.payload
+          });
+          break;
+
+        case 'interaction:button-click':
+          this.emit({
+            topic: 'discord:button-click',
+            source: { elementId: this.element?.id || 'discord', elementPath: [] },
+            timestamp: Date.now(),
+            payload: msg.payload
+          });
+          break;
+
+        case 'slash-command-registered':
+          console.log('[DiscordAfferent] Slash command registered:', msg.name);
+          break;
+
+        case 'slash-command-unregistered':
+          console.log('[DiscordAfferent] Slash command unregistered:', msg.name);
+          break;
+
         case 'error':
           console.error('[DiscordAfferent] Server error:', msg.error);
           this.handleError('processing', 'Server error', msg.error);
@@ -485,7 +576,7 @@ export function createModule(env: IAxonEnvironmentV2): any {
     }
     
     // Public API for action invocation
-    
+
     static actions = {
       'join': {
         description: 'Join a Discord channel',
@@ -505,23 +596,52 @@ export function createModule(env: IAxonEnvironmentV2): any {
           channelId: { type: 'string', required: true },
           message: { type: 'string', required: true }
         }
+      },
+      'registerSlashCommand': {
+        description: 'Register a slash command',
+        parameters: {
+          commandName: { type: 'string', required: true },
+          description: { type: 'string', required: true },
+          options: { type: 'array', required: false }
+        }
+      },
+      'unregisterSlashCommand': {
+        description: 'Unregister a slash command',
+        parameters: {
+          commandName: { type: 'string', required: true }
+        }
+      },
+      'sendTyping': {
+        description: 'Send typing indicator to a channel',
+        parameters: {
+          channelId: { type: 'string', required: true }
+        }
+      },
+      'replyToInteraction': {
+        description: 'Reply to a Discord interaction (slash command or button)',
+        parameters: {
+          interactionId: { type: 'string', required: true },
+          content: { type: 'string', required: false },
+          embed: { type: 'object', required: false },
+          ephemeral: { type: 'boolean', required: false }
+        }
       }
     };
-    
+
     async join(params: { channelId: string }): Promise<void> {
       this.enqueueCommand({
         type: 'join',
         channelId: params.channelId
       });
     }
-    
+
     async leave(params: { channelId: string }): Promise<void> {
       this.enqueueCommand({
         type: 'leave',
         channelId: params.channelId
       });
     }
-    
+
     async send(params: { channelId: string; message: string }): Promise<void> {
       this.enqueueCommand({
         type: 'send',
@@ -529,14 +649,51 @@ export function createModule(env: IAxonEnvironmentV2): any {
         message: params.message
       });
     }
-    
-    // No persistent properties needed - all state in VEIL!
-    // Runtime caches rebuilt from component-state on mount
-    
-    static externalResources = [
-      { propertyKey: 'botToken', resourceId: 'secret:discord.token' }
-    ];
+
+    async registerSlashCommand(params: { commandName: string; description: string; options?: any[] }): Promise<void> {
+      this.enqueueCommand({
+        type: 'registerSlashCommand',
+        commandName: params.commandName,
+        description: params.description,
+        options: params.options
+      });
+    }
+
+    async unregisterSlashCommand(params: { commandName: string }): Promise<void> {
+      this.enqueueCommand({
+        type: 'unregisterSlashCommand',
+        commandName: params.commandName
+      });
+    }
+
+    async sendTyping(params: { channelId: string }): Promise<void> {
+      this.enqueueCommand({
+        type: 'sendTyping',
+        channelId: params.channelId
+      });
+    }
+
+    async replyToInteraction(params: { interactionId: string; content?: string; embed?: any; ephemeral?: boolean }): Promise<void> {
+      this.enqueueCommand({
+        type: 'replyToInteraction',
+        interactionId: params.interactionId,
+        content: params.content,
+        embed: params.embed,
+        ephemeral: params.ephemeral
+      });
+    }
+
+    // Provide clean serialization for logging
+    toJSON() {
+      return {
+        type: 'DiscordAfferent',
+        connected: !!this.ws,
+        reconnecting: !!this.reconnectTimeout,
+        joinedChannels: this.joinedChannelsCache.length,
+        channelNames: Object.keys(this.channelNamesCache).length
+      };
+    }
   }
-  
+
   return DiscordAfferent;
 }

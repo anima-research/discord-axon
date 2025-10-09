@@ -378,9 +378,9 @@ export function createModule(env: IAxonEnvironment): typeof env.InteractiveCompo
         content: joinedList.length > 0
           ? `Currently in: ${joinedList.join(', ')}`
           : 'Not in any channels',
-        entityType: 'component',
-        entityId: this.element.id,
         attributes: {
+          entityType: 'component',
+          entityId: this.element.id,
           channels: Array.from(this.joinedChannels),
           count: this.joinedChannels.size
         }
@@ -403,9 +403,9 @@ export function createModule(env: IAxonEnvironment): typeof env.InteractiveCompo
         id: 'discord-guilds-list',
         type: 'state',
         content: this.formatGuildsList(),
-        entityType: 'component',
-        entityId: this.element.id,
         attributes: {
+          entityType: 'component',
+          entityId: this.element.id,
           guilds: payload.guilds,
           count: payload.guilds.length
         }
@@ -429,9 +429,9 @@ export function createModule(env: IAxonEnvironment): typeof env.InteractiveCompo
         id: `discord-channels-${payload.guildId}`,
         type: 'state',
         content: this.formatChannelsList(payload.channels),
-        entityType: 'component',
-        entityId: this.element.id,
         attributes: {
+          entityType: 'component',
+          entityId: this.element.id,
           guildId: payload.guildId,
           guildName: guild?.name,
           channels: payload.channels,
@@ -745,7 +745,7 @@ export function createModule(env: IAxonEnvironment): typeof env.InteractiveCompo
         if (!existingFacet) {
           this.addFacet({
             id: facetId,
-            type: 'action-definition',
+            type: 'defineAction',
             displayName: action.displayName,
             content: action.description,
             attributes: {

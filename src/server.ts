@@ -7,7 +7,22 @@
  */
 
 import express from 'express';
-import { Client, GatewayIntentBits, TextChannel } from 'discord.js';
+import {
+  Client,
+  GatewayIntentBits,
+  TextChannel,
+  REST,
+  Routes,
+  SlashCommandBuilder,
+  CommandInteraction,
+  ButtonInteraction,
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
+  EmbedBuilder,
+  InteractionType,
+  ComponentType
+} from 'discord.js';
 import WebSocket from 'ws';
 import { AxonModuleServer } from '@connectome/axon-server';
 import { join } from 'path';
@@ -19,16 +34,19 @@ interface AxonConnection {
   guildId: string;
   joinedChannels: Set<string>;
   lastRead: Map<string, string>;
+  registeredCommands: Set<string>; // Track slash commands registered by this connection
+  pendingInteractions: Map<string, any>; // Track interactions awaiting response
 }
 
 class CombinedDiscordAxonServer {
   private app = express();
   private wss: WebSocket.Server;
   private discord: Client;
+  private rest?: REST; // Discord REST API client for slash commands
   private connections = new Map<string, AxonConnection>();
   private moduleServer: AxonModuleServer;
   private hotReloadWss?: WebSocket.Server;
-  
+
   constructor(
     private httpPort: number = 8080,
     private wsPort: number = 8081,
@@ -43,17 +61,17 @@ class CombinedDiscordAxonServer {
         GatewayIntentBits.GuildMembers
       ]
     });
-    
+
     // WebSocket server for AXON connections
     this.wss = new WebSocket.Server({ port: wsPort });
-    
+
     // Create module server
     this.moduleServer = new AxonModuleServer({
       port: this.modulePort,
       hotReload: true,
       corsOrigin: '*'
     });
-    
+
     // Routes and services setup
     this.setupRoutes();
     this.setupWebSocket();
@@ -61,8 +79,16 @@ class CombinedDiscordAxonServer {
   }
   
   private async registerDiscordModules(): Promise<void> {
-    // Always use source directory for modules (AxonModuleServer transpiles them)
-    const modulesDir = join(__dirname, '..', 'src', 'modules');
+    // Determine if running from compiled dist/ or source src/
+    // Check if current file ends with .ts (dev/ts-node) or .js (compiled)
+    const isCompiledContext = __filename.endsWith('.js') && __dirname.includes('/dist');
+    const isDevelopment = __filename.endsWith('.ts') || !__dirname.includes('/dist');
+
+    const modulesDir = isCompiledContext
+      ? join(__dirname, '..', 'src', 'modules')  // dist/ -> ../src/modules
+      : join(__dirname, 'modules');              // src/ -> modules (when running from src/)
+
+    console.log(`[Server] Module registration - isDev: ${isDevelopment}, modulesDir: ${modulesDir}`);
     
     // Register the new Discord Afferent
     await this.moduleServer.addModule('discord-afferent', {
@@ -97,32 +123,21 @@ class CombinedDiscordAxonServer {
       }
     });
     
-    // Keep old discord module for backward compatibility
+    // Map module names to their actual file names
     await this.moduleServer.addModule('discord', {
       name: 'discord',
       path: join(modulesDir, 'discord-axon-refactored.ts'),
       manifest: {
-        name: 'DiscordAxonComponent',
+        name: 'discord-axon-refactored',
         version: '1.0.0',
-        description: 'Discord integration for Connectome',
+        description: 'Discord integration using RETM pattern',
         componentClass: 'DiscordAxonComponent',
         moduleType: 'function',
-        actions: {
-          'join': {
-            description: 'Join a Discord channel',
-            parameters: { channelId: { type: 'string', required: true } }
-          },
-          'leave': {
-            description: 'Leave a Discord channel',
-            parameters: { channelId: { type: 'string', required: true } }
-          },
-          'send': {
-            description: 'Send a message to a channel',
-            parameters: { 
-              channelId: { type: 'string', required: true },
-              message: { type: 'string', required: true }
-            }
-          }
+        config: {
+          serverUrl: { type: 'string', description: 'WebSocket server URL' },
+          guildId: { type: 'string', description: 'Discord guild ID' },
+          agentName: { type: 'string', description: 'Agent name for multi-agent support' },
+          botToken: { type: 'string', secret: true, external: 'secret:discord.token', description: 'Discord bot token' }
         }
       }
     });
@@ -261,10 +276,20 @@ class CombinedDiscordAxonServer {
         }
       });
       
-      ws.on('close', () => {
+      ws.on('close', async () => {
         const connectionId = this.findConnectionId(ws);
         if (connectionId) {
           console.log(`[Server] Connection closed: ${connectionId}`);
+
+          // Clean up registered slash commands
+          const connection = this.connections.get(connectionId);
+          if (connection && connection.registeredCommands.size > 0) {
+            console.log(`[Server] Cleaning up ${connection.registeredCommands.size} slash commands`);
+            for (const commandName of connection.registeredCommands) {
+              await this.unregisterSlashCommand(connection.guildId, commandName);
+            }
+          }
+
           this.connections.delete(connectionId);
         }
       });
@@ -284,9 +309,9 @@ class CombinedDiscordAxonServer {
   
   private async handleAuth(ws: WebSocket, msg: any): Promise<void> {
     const { token, guild, agent } = msg;
-    
+
     console.log(`[Server] Auth request from agent: ${agent}, guild: ${guild}`);
-    
+
     // Create connection
     const connectionId = this.generateConnectionId();
     const connection: AxonConnection = {
@@ -294,18 +319,20 @@ class CombinedDiscordAxonServer {
       agentName: agent || 'Agent',
       guildId: guild || '',
       joinedChannels: new Set(),
-      lastRead: new Map()
+      lastRead: new Map(),
+      registeredCommands: new Set(),
+      pendingInteractions: new Map()
     };
-    
+
     this.connections.set(connectionId, connection);
-    
+
     // Send success with bot user ID
     ws.send(JSON.stringify({
       type: 'authenticated',
       connectionId,
       botUserId: this.discord.user?.id
     }));
-    
+
     console.log(`[Server] Authenticated connection: ${connectionId}`);
   }
   
@@ -313,6 +340,74 @@ class CombinedDiscordAxonServer {
     this.discord.on('ready', () => {
       console.log(`[Discord] Bot logged in as ${this.discord.user?.tag}`);
       console.log(`[Discord] Bot ID: ${this.discord.user?.id}`);
+    });
+
+    // Handle slash commands and button interactions
+    this.discord.on('interactionCreate', async (interaction) => {
+      // Handle slash commands
+      if (interaction.isChatInputCommand()) {
+        console.log(`[Discord] Slash command received: /${interaction.commandName}`);
+
+        // Find the connection that should handle this interaction
+        // Route based on guild membership
+        for (const [id, connection] of this.connections) {
+          if (interaction.guildId && interaction.guildId === connection.guildId) {
+            // Store interaction for potential response
+            connection.pendingInteractions.set(interaction.id, interaction);
+
+            // Forward to AXON client
+            connection.ws.send(JSON.stringify({
+              type: 'interaction:slash-command',
+              payload: {
+                interactionId: interaction.id,
+                commandName: interaction.commandName,
+                options: interaction.options.data.map((opt: any) => ({
+                  name: opt.name,
+                  type: opt.type,
+                  value: opt.value
+                })),
+                user: interaction.user.username,
+                userId: interaction.user.id,
+                channelId: interaction.channelId,
+                guildId: interaction.guildId
+              }
+            }));
+
+            console.log(`[Discord] Forwarded slash command to connection: ${id}`);
+            break;
+          }
+        }
+      }
+
+      // Handle button interactions
+      else if (interaction.isButton()) {
+        console.log(`[Discord] Button interaction: ${interaction.customId}`);
+
+        // Find the connection that should handle this interaction
+        for (const [id, connection] of this.connections) {
+          if (interaction.guildId && interaction.guildId === connection.guildId) {
+            // Store interaction for potential response
+            connection.pendingInteractions.set(interaction.id, interaction);
+
+            // Forward to AXON client
+            connection.ws.send(JSON.stringify({
+              type: 'interaction:button',
+              payload: {
+                interactionId: interaction.id,
+                customId: interaction.customId,
+                user: interaction.user.username,
+                userId: interaction.user.id,
+                channelId: interaction.channelId,
+                guildId: interaction.guildId,
+                messageId: interaction.message.id
+              }
+            }));
+
+            console.log(`[Discord] Forwarded button interaction to connection: ${id}`);
+            break;
+          }
+        }
+      }
     });
     
     this.discord.on('messageCreate', async (message) => {
@@ -532,13 +627,13 @@ class CombinedDiscordAxonServer {
       
       case 'listChannels': {
         const { guildId } = msg;
-        
+
         try {
           const guild = await this.discord.guilds.fetch(guildId);
           if (!guild) {
             throw new Error('Guild not found');
           }
-          
+
           const channels = guild.channels.cache
             .filter(channel => channel.isTextBased())
             .map(channel => ({
@@ -551,13 +646,13 @@ class CombinedDiscordAxonServer {
               position: 'position' in channel ? channel.position : 0
             }))
             .sort((a, b) => a.position - b.position);
-          
+
           connection.ws.send(JSON.stringify({
             type: 'channels',
             guildId,
             channels
           }));
-          
+
           console.log(`[Server] Sent channels list for guild ${guild.name} to ${connection.agentName} (${channels.length} channels)`);
         } catch (error: any) {
           console.error(`[Server] Failed to list channels:`, error);
@@ -568,6 +663,387 @@ class CombinedDiscordAxonServer {
         }
         break;
       }
+
+      case 'registerSlashCommand': {
+        const { name, description, options = [] } = msg;
+
+        try {
+          // Wait for Discord to be ready
+          if (!this.discord.isReady()) {
+            console.log(`[Server] Waiting for Discord to be ready before registering /${name}...`);
+            await new Promise<void>((resolve) => {
+              if (this.discord.isReady()) {
+                resolve();
+              } else {
+                this.discord.once('ready', () => resolve());
+              }
+            });
+          }
+
+          await this.registerSlashCommand(connection.guildId, name, description, options);
+          connection.registeredCommands.add(name);
+
+          connection.ws.send(JSON.stringify({
+            type: 'slash-command-registered',
+            name
+          }));
+
+          console.log(`[Server] Registered slash command /${name} for ${connection.agentName}`);
+        } catch (error: any) {
+          console.error(`[Server] Failed to register slash command:`, error);
+          connection.ws.send(JSON.stringify({
+            type: 'error',
+            error: `Failed to register slash command: ${error.message}`
+          }));
+        }
+        break;
+      }
+
+      case 'unregisterSlashCommand': {
+        const { name } = msg;
+
+        try {
+          await this.unregisterSlashCommand(connection.guildId, name);
+          connection.registeredCommands.delete(name);
+
+          connection.ws.send(JSON.stringify({
+            type: 'slash-command-unregistered',
+            name
+          }));
+
+          console.log(`[Server] Unregistered slash command /${name} for ${connection.agentName}`);
+        } catch (error: any) {
+          console.error(`[Server] Failed to unregister slash command:`, error);
+          connection.ws.send(JSON.stringify({
+            type: 'error',
+            error: `Failed to unregister slash command: ${error.message}`
+          }));
+        }
+        break;
+      }
+
+      case 'sendTyping': {
+        const { channelId } = msg;
+
+        try {
+          const channel = await this.discord.channels.fetch(channelId) as TextChannel;
+          if (!channel || !channel.isTextBased()) {
+            throw new Error('Channel not found or not a text channel');
+          }
+
+          await channel.sendTyping();
+          console.log(`[Server] Sent typing indicator to ${channel.name}`);
+        } catch (error: any) {
+          console.error(`[Server] Failed to send typing indicator:`, error);
+          connection.ws.send(JSON.stringify({
+            type: 'error',
+            error: `Failed to send typing indicator: ${error.message}`
+          }));
+        }
+        break;
+      }
+
+      case 'sendEmbed': {
+        const { channelId, embed, buttons = [] } = msg;
+
+        try {
+          const channel = await this.discord.channels.fetch(channelId) as TextChannel;
+          if (!channel || channel.type !== 0) {
+            throw new Error('Channel not found or not a text channel');
+          }
+
+          // Build embed
+          const embedBuilder = new EmbedBuilder()
+            .setTitle(embed.title)
+            .setDescription(embed.description)
+            .setColor(embed.color || 0x5865F2);
+
+          if (embed.fields) {
+            embedBuilder.addFields(embed.fields);
+          }
+
+          // Build message payload
+          const messagePayload: any = { embeds: [embedBuilder] };
+
+          // Add buttons if provided
+          if (buttons.length > 0) {
+            const row = new ActionRowBuilder<ButtonBuilder>();
+            for (const btn of buttons) {
+              const button = new ButtonBuilder()
+                .setCustomId(btn.customId)
+                .setLabel(btn.label)
+                .setStyle(this.getButtonStyle(btn.style));
+
+              if (btn.emoji) {
+                button.setEmoji(btn.emoji);
+              }
+
+              row.addComponents(button);
+            }
+            messagePayload.components = [row];
+          }
+
+          const sentMessage = await channel.send(messagePayload);
+          console.log(`[Server] Sent embed to ${channel.name} with ${buttons.length} buttons`);
+
+          // Send confirmation
+          connection.ws.send(JSON.stringify({
+            type: 'message_sent',
+            channelId,
+            messageId: sentMessage.id,
+            timestamp: sentMessage.createdAt.toISOString()
+          }));
+        } catch (error: any) {
+          console.error(`[Server] Failed to send embed:`, error);
+          connection.ws.send(JSON.stringify({
+            type: 'error',
+            error: `Failed to send embed: ${error.message}`
+          }));
+        }
+        break;
+      }
+
+      case 'editMessage': {
+        const { channelId, messageId, content, embed, buttons = [] } = msg;
+
+        try {
+          const channel = await this.discord.channels.fetch(channelId) as TextChannel;
+          if (!channel || channel.type !== 0) {
+            throw new Error('Channel not found or not a text channel');
+          }
+
+          const message = await channel.messages.fetch(messageId);
+          if (!message) {
+            throw new Error('Message not found');
+          }
+
+          // Build message payload
+          const messagePayload: any = {};
+
+          if (content !== undefined) {
+            messagePayload.content = content;
+          }
+
+          if (embed) {
+            const embedBuilder = new EmbedBuilder()
+              .setTitle(embed.title)
+              .setDescription(embed.description)
+              .setColor(embed.color || 0x5865F2);
+
+            if (embed.fields) {
+              embedBuilder.addFields(embed.fields);
+            }
+
+            messagePayload.embeds = [embedBuilder];
+          }
+
+          // Add buttons if provided
+          if (buttons.length > 0) {
+            const row = new ActionRowBuilder<ButtonBuilder>();
+            for (const btn of buttons) {
+              const button = new ButtonBuilder()
+                .setCustomId(btn.customId)
+                .setLabel(btn.label)
+                .setStyle(this.getButtonStyle(btn.style));
+
+              if (btn.emoji) {
+                button.setEmoji(btn.emoji);
+              }
+
+              row.addComponents(button);
+            }
+            messagePayload.components = [row];
+          } else {
+            // Clear buttons if none provided
+            messagePayload.components = [];
+          }
+
+          await message.edit(messagePayload);
+          console.log(`[Server] Edited message ${messageId} in ${channel.name}`);
+
+          // Send confirmation
+          connection.ws.send(JSON.stringify({
+            type: 'message_edited',
+            channelId,
+            messageId,
+            timestamp: new Date().toISOString()
+          }));
+        } catch (error: any) {
+          console.error(`[Server] Failed to edit message:`, error);
+          connection.ws.send(JSON.stringify({
+            type: 'error',
+            error: `Failed to edit message: ${error.message}`
+          }));
+        }
+        break;
+      }
+
+      case 'replyToInteraction': {
+        const { interactionId, content, embed, ephemeral = false } = msg;
+
+        try {
+          const interaction = connection.pendingInteractions.get(interactionId);
+          if (!interaction) {
+            throw new Error('Interaction not found or expired');
+          }
+
+          const replyOptions: any = { ephemeral };
+
+          if (content) {
+            replyOptions.content = content;
+          }
+
+          if (embed) {
+            const embedBuilder = new EmbedBuilder()
+              .setTitle(embed.title)
+              .setDescription(embed.description)
+              .setColor(embed.color || 0x5865F2);
+
+            if (embed.fields) {
+              embedBuilder.addFields(embed.fields);
+            }
+
+            replyOptions.embeds = [embedBuilder];
+          }
+
+          if (interaction.replied || interaction.deferred) {
+            await interaction.followUp(replyOptions);
+          } else {
+            await interaction.reply(replyOptions);
+          }
+
+          // Clean up
+          connection.pendingInteractions.delete(interactionId);
+
+          console.log(`[Server] Replied to interaction ${interactionId}`);
+        } catch (error: any) {
+          console.error(`[Server] Failed to reply to interaction:`, error);
+          connection.ws.send(JSON.stringify({
+            type: 'error',
+            error: `Failed to reply to interaction: ${error.message}`
+          }));
+        }
+        break;
+      }
+    }
+  }
+
+  private getButtonStyle(style: string): ButtonStyle {
+    switch (style.toLowerCase()) {
+      case 'primary':
+      case 'blurple':
+        return ButtonStyle.Primary;
+      case 'secondary':
+      case 'grey':
+      case 'gray':
+        return ButtonStyle.Secondary;
+      case 'success':
+      case 'green':
+        return ButtonStyle.Success;
+      case 'danger':
+      case 'red':
+        return ButtonStyle.Danger;
+      case 'link':
+        return ButtonStyle.Link;
+      default:
+        return ButtonStyle.Primary;
+    }
+  }
+
+  private async registerSlashCommand(guildId: string, name: string, description: string, options: any[]): Promise<void> {
+    if (!this.rest || !this.discord.user) {
+      throw new Error('Discord client not ready');
+    }
+
+    console.log(`[Server] Registering slash command /${name} for guild ${guildId}, bot user ${this.discord.user.id}`);
+
+    const command = new SlashCommandBuilder()
+      .setName(name)
+      .setDescription(description);
+
+    // Add options
+    for (const opt of options) {
+      switch (opt.type.toLowerCase()) {
+        case 'string':
+          command.addStringOption(option =>
+            option
+              .setName(opt.name)
+              .setDescription(opt.description)
+              .setRequired(opt.required ?? false)
+          );
+          break;
+        case 'integer':
+          command.addIntegerOption(option =>
+            option
+              .setName(opt.name)
+              .setDescription(opt.description)
+              .setRequired(opt.required ?? false)
+          );
+          break;
+        case 'boolean':
+          command.addBooleanOption(option =>
+            option
+              .setName(opt.name)
+              .setDescription(opt.description)
+              .setRequired(opt.required ?? false)
+          );
+          break;
+        case 'user':
+          command.addUserOption(option =>
+            option
+              .setName(opt.name)
+              .setDescription(opt.description)
+              .setRequired(opt.required ?? false)
+          );
+          break;
+        case 'channel':
+          command.addChannelOption(option =>
+            option
+              .setName(opt.name)
+              .setDescription(opt.description)
+              .setRequired(opt.required ?? false)
+          );
+          break;
+      }
+    }
+
+    // Register command to guild (POST adds individual command without overwriting others)
+    try {
+      const route = Routes.applicationGuildCommands(this.discord.user.id, guildId);
+      console.log(`[Server] POST to Discord API: ${route}`);
+      const result = await this.rest.post(route, { body: command.toJSON() });
+      console.log(`[Server] Successfully registered /${name}:`, result);
+    } catch (error: any) {
+      console.error(`[Server] Discord API error:`, {
+        status: error.status,
+        code: error.code,
+        message: error.message,
+        requestBody: error.requestBody
+      });
+      throw error;
+    }
+  }
+
+  private async unregisterSlashCommand(guildId: string, name: string): Promise<void> {
+    if (!this.rest || !this.discord.user) {
+      return;
+    }
+
+    try {
+      // Get all registered commands
+      const commands: any = await this.rest.get(
+        Routes.applicationGuildCommands(this.discord.user.id, guildId)
+      );
+
+      // Find and delete the command
+      const command = commands.find((c: any) => c.name === name);
+      if (command) {
+        await this.rest.delete(
+          Routes.applicationGuildCommand(this.discord.user.id, guildId, command.id)
+        );
+      }
+    } catch (error) {
+      console.error(`[Server] Error unregistering command ${name}:`, error);
     }
   }
   
@@ -600,6 +1076,22 @@ class CombinedDiscordAxonServer {
   }
   
   async start(botToken: string) {
+    // Login to Discord FIRST (before starting servers)
+    console.log('🔐 Logging into Discord...');
+    await this.discord.login(botToken);
+
+    // Wait for Discord to be fully ready
+    if (!this.discord.isReady()) {
+      await new Promise<void>((resolve) => {
+        this.discord.once('ready', () => resolve());
+      });
+    }
+
+    console.log(`✅ Discord bot ready as ${this.discord.user?.tag}`);
+
+    // Initialize REST client for slash commands (after login)
+    this.rest = new REST({ version: '10' }).setToken(botToken);
+
     // Start Express server
     this.app.listen(this.httpPort, () => {
       console.log(`\n🚀 Combined Discord AXON Server`);
@@ -608,22 +1100,19 @@ class CombinedDiscordAxonServer {
       console.log(`   Module server at http://localhost:${this.httpPort}/modules/manifest`);
       console.log(`\n📡 Agents can connect to: ws://localhost:${this.wsPort}/ws`);
     });
-    
+
     // Start hot reload WebSocket server
     const hotReloadPort = this.modulePort + 1;
     this.hotReloadWss = new WebSocket.Server({ port: hotReloadPort });
     console.log(`   Hot reload WebSocket on port ${hotReloadPort}`);
-    
+
     this.hotReloadWss.on('connection', (ws) => {
       console.log('[HotReload] Client connected');
-      
+
       ws.on('close', () => {
         console.log('[HotReload] Client disconnected');
       });
     });
-    
-    // Login to Discord
-    await this.discord.login(botToken);
   }
 }
 
