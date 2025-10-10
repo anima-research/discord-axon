@@ -745,7 +745,7 @@ export function createModule(env: IAxonEnvironment): typeof env.InteractiveCompo
         if (!existingFacet) {
           this.addFacet({
             id: facetId,
-            type: 'defineAction',
+            type: 'action-definition',
             displayName: action.displayName,
             content: action.description,
             attributes: {
