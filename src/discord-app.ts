@@ -206,7 +206,11 @@ class DiscordHistorySyncReceptor extends BaseReceptor {
             id: `discord-offline-delete-${messageId}-${Date.now()}`,
             type: 'event',
             content: `[A message was deleted while offline]`,
-            eventType: 'discord-message-deleted-offline',
+            state: {
+              source: 'discord-history-sync',
+              eventType: 'discord-message-deleted-offline',
+              metadata: { messageId, channelId }
+            },
             attributes: { messageId, channelId }
           }
         });
@@ -234,7 +238,16 @@ class DiscordHistorySyncReceptor extends BaseReceptor {
             id: `discord-offline-edit-${messageId}-${Date.now()}`,
             type: 'event',
             content: `[A message was edited while offline]`,
-            eventType: 'discord-message-edited-offline',
+            state: {
+              source: 'discord-history-sync',
+              eventType: 'discord-message-edited-offline',
+              metadata: { 
+                messageId, 
+                channelId,
+                oldContent: this.extractContent(veilContent),
+                newContent: discordMsg.content
+              }
+            },
             attributes: { 
               messageId, 
               channelId,
@@ -293,7 +306,17 @@ class DiscordMessageUpdateReceptor extends BaseReceptor {
           id: `discord-edit-${messageId}-${Date.now()}`,
           type: 'event',
           content: `${author} edited their message in #${channelName}`,
-          eventType: 'discord-message-edited',
+          state: {
+            source: 'discord',
+            eventType: 'discord-message-edited',
+            metadata: {
+              messageId,
+              author,
+              channelName,
+              oldContent,
+              newContent: content
+            }
+          },
           attributes: {
             messageId,
             oldContent,
@@ -338,7 +361,16 @@ class DiscordMessageDeleteReceptor extends BaseReceptor {
           id: `discord-delete-${messageId}-${Date.now()}`,
           type: 'event',
           content: `${author || 'Someone'} deleted their message in #${channelName || 'a channel'}`,
-          eventType: 'discord-message-deleted',
+          state: {
+            source: 'discord',
+            eventType: 'discord-message-deleted',
+            metadata: {
+              messageId,
+              author,
+              channelName,
+              deletedFacetId: facetId
+            }
+          },
           attributes: {
             messageId,
             author,
@@ -434,7 +466,7 @@ class DiscordSpeechEffector extends BaseEffector {
       
       // Find the most recent discord message facet to get the channelId
       const discordMessages = Array.from(state.facets.values()).filter(
-        f => f.type === 'event' && (f as any).eventType === 'discord-message'
+        f => f.type === 'event' && f.state.eventType === 'discord-message'
       );
       
       if (discordMessages.length === 0) {
