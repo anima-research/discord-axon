@@ -17,6 +17,9 @@ npm-debug.log*
 .env.local
 .env.*.local
 
+# Configuration (contains secrets)
+config.yaml
+
 # IDE
 .vscode/
 .idea/
