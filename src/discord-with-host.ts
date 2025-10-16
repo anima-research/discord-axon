@@ -58,16 +58,16 @@ async function main() {
     console.log('⚠️  No ANTHROPIC_API_KEY found, using mock provider');
     const mockProvider = new MockLLMProvider();
     
-    // Set some responses for the mock - including mentions for testing
+    // Set some responses for the mock - including mentions and replies for testing
     mockProvider.setResponses([
-      "Hello <@antra_tessera>! Nice to meet you! Feel free to check <#general> for updates.",
-      "Sure thing! Hey <@antra_tessera>, you should definitely check out <#general> for the latest info!",
+      "<reply:@antra_tessera> Hello! Nice to meet you! Feel free to check <#general> for updates.",
+      "<reply:@antra_tessera> Sure thing! I can definitely help with that. Check <#general> for more info!",
       "I'm connected to Discord and ready to chat! <@antra_tessera> let me know if you need anything!",
-      "Feel free to ask me anything - I'm here to help <@antra_tessera>!",
+      "<reply:@antra_tessera> Great question! Let me think about that...",
       "Hey <@antra_tessera>! The mention system is working! Check <#general> to see more.",
-      "Testing mentions: Hello <@antra_tessera>, please visit <#general> when you can!",
+      "<reply:@antra_tessera> Absolutely! The reply system is working too!",
       "Components can now declare their dependencies, and I can mention <@antra_tessera> too!",
-      "This makes the whole system much more modular, right <@antra_tessera>? See <#general>!",
+      "<reply:@antra_tessera> This makes the whole system much more modular! See <#general>!",
     ]);
     
     llmProvider = mockProvider;

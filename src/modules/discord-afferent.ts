@@ -22,6 +22,7 @@ interface DiscordCommand {
   type: 'join' | 'leave' | 'send' | 'registerSlashCommand' | 'unregisterSlashCommand' | 'sendTyping' | 'replyToInteraction';
   channelId?: string;
   message?: string;
+  replyTo?: string;  // Message ID to reply to
   scrollback?: number;
   lastMessageId?: string;
   // Slash command params
@@ -200,7 +201,8 @@ export function createModule(env: IAxonEnvironmentV2): any {
           this.ws.send(JSON.stringify({
             type: 'send',
             channelId: command.channelId,
-            message: command.message
+            message: command.message,
+            replyTo: command.replyTo  // Optional reply target
           }));
           break;
 
@@ -666,11 +668,12 @@ export function createModule(env: IAxonEnvironmentV2): any {
       });
     }
 
-    async send(params: { channelId: string; message: string }): Promise<void> {
+    async send(params: { channelId: string; message: string; replyTo?: string }): Promise<void> {
       this.enqueueCommand({
         type: 'send',
         channelId: params.channelId,
-        message: params.message
+        message: params.message,
+        replyTo: params.replyTo
       });
     }
 

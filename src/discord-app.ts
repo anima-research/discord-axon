@@ -64,7 +64,7 @@ class DiscordMessageReceptor extends BaseReceptor {
   
   transform(event: SpaceEvent, state: ReadonlyVEILState): any[] {
     const payload = event.payload as any;
-    const { channelId, channelName, author, authorId, content, rawContent, mentions, messageId, streamId, streamType, isHistory, isBot } = payload;
+    const { channelId, channelName, author, authorId, content, rawContent, mentions, reply, messageId, streamId, streamType, isHistory, isBot } = payload;
     
     // Check if we've already processed this message (de-dup against VEIL)
     const lastReadFacet = state.facets.get(`discord-lastread-${channelId}`);
@@ -75,9 +75,27 @@ class DiscordMessageReceptor extends BaseReceptor {
       return []; // Skip old message
     }
     
-    console.log(`[DiscordMessageReceptor] Processing message from ${author}: "${content}"${isHistory ? ' (history)' : ''}`);
+    console.log(`[DiscordMessageReceptor] Processing message from ${author}: "${content}"${isHistory ? ' (history)' : ''}${reply ? ' (reply)' : ''}`);
     
     const deltas: any[] = [];
+    
+    // Format content with reply syntax if this is a reply
+    let formattedContent = content;
+    let replyToUsername = null;
+    
+    if (reply) {
+      // Find the referenced message in VEIL to get the author
+      const referencedFacet = state.facets.get(`discord-msg-${reply.messageId}`);
+      if (referencedFacet && referencedFacet.state?.metadata?.author) {
+        replyToUsername = referencedFacet.state.metadata.author;
+      } else if (reply.author) {
+        replyToUsername = reply.author;
+      }
+      
+      if (replyToUsername) {
+        formattedContent = `<reply:@${replyToUsername}> ${content}`;
+      }
+    }
     
     // Create message facet (eventType must be in state for proper serialization!)
     deltas.push({
@@ -85,7 +103,7 @@ class DiscordMessageReceptor extends BaseReceptor {
       facet: {
         id: `discord-msg-${messageId}`,
         type: 'event',
-        content: `${author}: ${content}`, // Use parsed content with human-readable mentions
+        content: `${author}: ${formattedContent}`, // Include reply context in content
         state: {
           source: 'discord',
           eventType: 'discord-message',
@@ -96,7 +114,8 @@ class DiscordMessageReceptor extends BaseReceptor {
             isBot,
             isHistory,
             rawContent, // Original content with Discord IDs
-            mentions // Structured mention metadata
+            mentions, // Structured mention metadata
+            reply // Reply information if this is a reply
           }
         },
         streamId,
@@ -104,7 +123,8 @@ class DiscordMessageReceptor extends BaseReceptor {
         attributes: {
           channelId,
           messageId,
-          mentions // Also include in attributes for easy access
+          mentions, // Also include in attributes for easy access
+          reply // Reply information for quick access
         }
       }
     });
@@ -510,14 +530,28 @@ class DiscordSpeechEffector extends BaseEffector {
       
       const speech = change.facet as any;
       const streamId = speech.streamId;
-      const content = speech.content;
+      let content = speech.content;
       
       // Check if this is for Discord
       if (!streamId || !streamId.startsWith('discord:')) continue;
       
       console.log(`[DiscordSpeechEffector] Processing speech for stream: ${streamId}`);
       
-      // Find the most recent discord message facet to get the channelId
+      // Check for reply syntax: <reply:@username> message
+      const replyMatch = content.match(/^<reply:@([^>]+)>\s*/);
+      let replyToUsername = null;
+      let replyToMessageId = null;
+      
+      if (replyMatch) {
+        replyToUsername = replyMatch[1];
+        content = content.substring(replyMatch[0].length); // Strip reply syntax
+        console.log(`[DiscordSpeechEffector] Detected reply to @${replyToUsername}`);
+        
+        // Infer which message to reply to using heuristics
+        replyToMessageId = this.inferReplyTarget(replyToUsername, speech, state);
+      }
+      
+      // Find the channel ID
       const discordMessages = Array.from(state.facets.values()).filter(
         f => f.type === 'event' && f.state.eventType === 'discord-message'
       );
@@ -527,7 +561,6 @@ class DiscordSpeechEffector extends BaseEffector {
         continue;
       }
       
-      // Use the most recent message
       const latestMessage = discordMessages[discordMessages.length - 1] as any;
       const channelId = latestMessage.attributes?.channelId;
       
@@ -536,14 +569,21 @@ class DiscordSpeechEffector extends BaseEffector {
         continue;
       }
       
+      // Send message (as reply if we have a target)
+      const sendParams: any = { channelId, message: content };
+      if (replyToMessageId) {
+        sendParams.replyTo = replyToMessageId;
+        console.log(`[DiscordSpeechEffector] Sending as reply to message ${replyToMessageId}`);
+      }
+      
       console.log(`[DiscordSpeechEffector] Sending to channel ${channelId}: "${content}"`);
       
-      // Call send on the Discord afferent (or component)
+      // Call send on the Discord afferent
       const components = this.discordElement.components as any[];
       for (const comp of components) {
         if (comp.send && typeof comp.send === 'function') {
           try {
-            await comp.send({ channelId, message: content });
+            await comp.send(sendParams);
             console.log(`[DiscordSpeechEffector] Successfully sent message`);
           } catch (error) {
             console.error(`Failed to send to Discord:`, error);
@@ -552,7 +592,7 @@ class DiscordSpeechEffector extends BaseEffector {
         } else if (comp.actions && comp.actions.has('send')) {
           try {
             const handler = comp.actions.get('send');
-            await handler({ channelId, message: content });
+            await handler(sendParams);
             console.log(`[DiscordSpeechEffector] Successfully sent message`);
           } catch (error) {
             console.error(`Failed to send to Discord:`, error);
@@ -563,6 +603,69 @@ class DiscordSpeechEffector extends BaseEffector {
     }
     
     return { events };
+  }
+  
+  /**
+   * Infer which message to reply to using heuristics
+   */
+  private inferReplyTarget(username: string, speech: any, state: ReadonlyVEILState): string | null {
+    const discordMessages = Array.from(state.facets.values()).filter(
+      f => f.type === 'event' && f.state?.eventType === 'discord-message'
+    ) as any[];
+    
+    // Heuristic 1: Check the activation event - what message triggered this response?
+    // The speech facet might have been created in response to an activation
+    // We can find the activation by looking for recent activations in the same stream
+    const activations = Array.from(state.facets.values()).filter(
+      f => f.type === 'agent-activation' && 
+      f.state?.streamRef?.streamId === speech.streamId
+    ) as any[];
+    
+    if (activations.length > 0) {
+      const latestActivation = activations[activations.length - 1];
+      const triggerMessageId = latestActivation.state?.messageId;
+      if (triggerMessageId) {
+        const triggerMessage = discordMessages.find(m => m.attributes?.messageId === triggerMessageId);
+        if (triggerMessage && triggerMessage.state?.metadata?.author === username) {
+          console.log(`[DiscordSpeechEffector] Reply target (activation): ${triggerMessageId}`);
+          return triggerMessageId;
+        }
+      }
+    }
+    
+    // Heuristic 2: Find last message from username that mentioned the bot or replied to it
+    const botUserId = '1382891708513128485'; // TODO: Make this configurable
+    for (let i = discordMessages.length - 1; i >= 0; i--) {
+      const msg = discordMessages[i];
+      if (msg.state?.metadata?.author !== username) continue;
+      
+      // Check if it mentioned the bot
+      const mentions = msg.state?.metadata?.mentions;
+      if (mentions?.users?.some((u: any) => u.id === botUserId)) {
+        console.log(`[DiscordSpeechEffector] Reply target (mentioned bot): ${msg.attributes.messageId}`);
+        return msg.attributes.messageId;
+      }
+      
+      // Check if it was a reply to the bot
+      const reply = msg.state?.metadata?.reply;
+      if (reply?.authorId === botUserId) {
+        console.log(`[DiscordSpeechEffector] Reply target (replied to bot): ${msg.attributes.messageId}`);
+        return msg.attributes.messageId;
+      }
+    }
+    
+    // Heuristic 3: Find last message from username (any)
+    for (let i = discordMessages.length - 1; i >= 0; i--) {
+      const msg = discordMessages[i];
+      if (msg.state?.metadata?.author === username) {
+        console.log(`[DiscordSpeechEffector] Reply target (last from user): ${msg.attributes.messageId}`);
+        return msg.attributes.messageId;
+      }
+    }
+    
+    // Fallback: No message found - will send as mention instead of reply
+    console.log(`[DiscordSpeechEffector] No reply target found for @${username}, will send as mention`);
+    return null;
   }
 }
 
