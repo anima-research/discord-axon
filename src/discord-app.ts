@@ -16,6 +16,7 @@ import { SpaceEvent } from 'connectome-ts/src/spaces/types';
 import { BaseReceptor, BaseEffector } from 'connectome-ts/src/components/base-martem';
 import { AgentEffector } from 'connectome-ts/src/agent/agent-effector';
 import { ContextTransform } from 'connectome-ts/src/hud/context-transform';
+import { ElementRequestReceptor, ElementTreeMaintainer } from 'connectome-ts/src/spaces/element-tree-receptors';
 import type { Facet, ReadonlyVEILState, FacetDelta, EffectorResult, AgentInterface } from 'connectome-ts/src';
 import { updateStateFacets } from 'connectome-ts/src/helpers/factories';
 
@@ -735,9 +736,9 @@ class DiscordAutoJoinComponent extends Component {
 export class DiscordApplication implements ConnectomeApplication {
   constructor(private config: DiscordAppConfig) {}
   
-  async createSpace(hostRegistry?: Map<string, any>): Promise<{ space: Space; veilState: VEILStateManager }> {
+  async createSpace(hostRegistry?: Map<string, any>, lifecycleId?: string, spaceId?: string): Promise<{ space: Space; veilState: VEILStateManager }> {
     const veilState = new VEILStateManager();
-    const space = new Space(veilState, hostRegistry);
+    const space = new Space(veilState, hostRegistry, lifecycleId, spaceId);
     
     // The Host will inject the actual llmProvider based on the config
     // No need to register the ID here
@@ -889,6 +890,11 @@ export class DiscordApplication implements ConnectomeApplication {
   
   async onStart(space: Space, veilState: VEILStateManager): Promise<void> {
     console.log('🚀 Discord application started!');
+    
+    // Mount core RETM components for element tree management
+    console.log('➕ Mounting Element Tree components');
+    await space.addComponentAsync(new ElementRequestReceptor());
+    await space.addComponentAsync(new ElementTreeMaintainer(space));
     
     // Mount Discord RETM components (auto-registration handles the rest!)
     console.log('➕ Mounting Discord Receptors and Effectors');
