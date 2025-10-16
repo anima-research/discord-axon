@@ -336,6 +336,203 @@ class CombinedDiscordAxonServer {
     console.log(`[Server] Authenticated connection: ${connectionId}`);
   }
   
+  // Cache for reverse mention lookups (name -> ID)
+  private userNameToId = new Map<string, string>();
+  private channelNameToId = new Map<string, string>();
+  private roleNameToId = new Map<string, string>();
+
+  /**
+   * Parse Discord mentions and replace them with human-readable text
+   * Returns both parsed content and mention metadata
+   */
+  private parseMentions(message: any): { content: string; mentions: any } {
+    let content = message.content;
+    const mentions: any = {
+      users: [],
+      channels: [],
+      roles: []
+    };
+
+    // Parse user mentions
+    if (message.mentions?.users?.size > 0) {
+      message.mentions.users.forEach((user: any) => {
+        const mentionPattern = new RegExp(`<@!?${user.id}>`, 'g');
+        content = content.replace(mentionPattern, `<@${user.username}>`);
+        mentions.users.push({
+          id: user.id,
+          username: user.username,
+          displayName: user.displayName || user.username,
+          bot: user.bot || false
+        });
+        
+        // Cache for reverse lookup
+        this.userNameToId.set(user.username.toLowerCase(), user.id);
+      });
+    }
+
+    // Parse channel mentions
+    if (message.mentions?.channels?.size > 0) {
+      message.mentions.channels.forEach((channel: any) => {
+        const mentionPattern = new RegExp(`<#${channel.id}>`, 'g');
+        content = content.replace(mentionPattern, `<#${channel.name}>`);
+        mentions.channels.push({
+          id: channel.id,
+          name: channel.name,
+          type: channel.type
+        });
+        
+        // Cache for reverse lookup
+        this.channelNameToId.set(channel.name.toLowerCase(), channel.id);
+      });
+    }
+
+    // Parse role mentions
+    if (message.mentions?.roles?.size > 0) {
+      message.mentions.roles.forEach((role: any) => {
+        const mentionPattern = new RegExp(`<@&${role.id}>`, 'g');
+        content = content.replace(mentionPattern, `<@${role.name}>`);
+        mentions.roles.push({
+          id: role.id,
+          name: role.name,
+          color: role.color
+        });
+        
+        // Cache for reverse lookup
+        this.roleNameToId.set(role.name.toLowerCase(), role.id);
+      });
+    }
+
+    return { content, mentions };
+  }
+
+  /**
+   * Convert human-readable mentions back to Discord IDs for sending
+   * Transforms: <@username> -> <@USER_ID>
+   *            <#channelname> -> <#CHANNEL_ID>
+   *            <@rolename> -> <@&ROLE_ID>
+   */
+  private async unparseMentions(content: string, guildId?: string): Promise<string> {
+    let result = content;
+    
+    // Collect all replacements to do at once (to avoid conflicts)
+    const replacements: Array<{ from: string; to: string }> = [];
+
+    // Find all channel mentions: <#channelname>
+    const channelMentionPattern = /<#([a-zA-Z0-9_-]+)>/g;
+    const channelMatches = [...content.matchAll(channelMentionPattern)];
+    
+    for (const match of channelMatches) {
+      const channelName = match[1];
+      const channelNameLower = channelName.toLowerCase();
+      
+      // Try cache first
+      let channelId = this.channelNameToId.get(channelNameLower);
+      
+      // If not in cache, try to find in Discord
+      if (!channelId && guildId) {
+        try {
+          const guild = await this.discord.guilds.fetch(guildId);
+          const channel = guild.channels.cache.find(c => 
+            c.name.toLowerCase() === channelNameLower
+          );
+          if (channel) {
+            channelId = channel.id;
+            this.channelNameToId.set(channelNameLower, channelId);
+          }
+        } catch (error) {
+          console.warn(`[Server] Could not resolve channel mention: ${channelName}`);
+        }
+      }
+      
+      if (channelId) {
+        replacements.push({ from: `<#${channelName}>`, to: `<#${channelId}>` });
+      }
+    }
+
+    // Find all @ mentions (users or roles): <@name>
+    const atMentionPattern = /<@([a-zA-Z0-9_-]+)>/g;
+    const atMatches = [...content.matchAll(atMentionPattern)];
+    
+    for (const match of atMatches) {
+      const name = match[1];
+      const nameLower = name.toLowerCase();
+      
+      // Try as user first
+      let userId = this.userNameToId.get(nameLower);
+      
+      if (userId) {
+        replacements.push({ from: `<@${name}>`, to: `<@${userId}>` });
+        continue;
+      }
+      
+      // Try as role
+      let roleId = this.roleNameToId.get(nameLower);
+      
+      if (roleId) {
+        replacements.push({ from: `<@${name}>`, to: `<@&${roleId}>` });
+        continue;
+      }
+      
+      // If not in cache, try to find in Discord
+      if (guildId) {
+        try {
+          const guild = await this.discord.guilds.fetch(guildId);
+          
+          // Try to find as user - search by username
+          try {
+            const members = await guild.members.search({ query: name, limit: 10 });
+            const member = members.find(m => 
+              m.user.username.toLowerCase() === nameLower
+            );
+            if (member) {
+              userId = member.user.id;
+              this.userNameToId.set(nameLower, userId);
+              replacements.push({ from: `<@${name}>`, to: `<@${userId}>` });
+              console.log(`[Server] Resolved mention <@${name}> -> <@${userId}> via Discord API`);
+              continue;
+            }
+          } catch (searchError) {
+            // Search failed, try fetching all members
+            console.log(`[Server] Member search failed for ${name}, trying full fetch`);
+            const members = await guild.members.fetch({ limit: 1000 });
+            const member = members.find(m => 
+              m.user.username.toLowerCase() === nameLower
+            );
+            if (member) {
+              userId = member.user.id;
+              this.userNameToId.set(nameLower, userId);
+              replacements.push({ from: `<@${name}>`, to: `<@${userId}>` });
+              console.log(`[Server] Resolved mention <@${name}> -> <@${userId}> via full member fetch`);
+              continue;
+            }
+          }
+          
+          // Try to find as role
+          const role = guild.roles.cache.find(r => 
+            r.name.toLowerCase() === nameLower
+          );
+          if (role) {
+            roleId = role.id;
+            this.roleNameToId.set(nameLower, roleId);
+            replacements.push({ from: `<@${name}>`, to: `<@&${roleId}>` });
+            continue;
+          }
+          
+          console.warn(`[Server] Could not resolve mention: ${name}`);
+        } catch (error) {
+          console.warn(`[Server] Error resolving mention ${name}:`, error);
+        }
+      }
+    }
+
+    // Apply all replacements
+    for (const { from, to } of replacements) {
+      result = result.replace(from, to);
+    }
+
+    return result;
+  }
+
   private setupDiscord() {
     this.discord.on('ready', () => {
       console.log(`[Discord] Bot logged in as ${this.discord.user?.tag}`);
@@ -414,6 +611,12 @@ class CombinedDiscordAxonServer {
       // Skip messages from our own bot to prevent loops
       if (message.author.id === this.discord.user?.id) return;
       
+      // Cache the message author for reverse lookups (so bot can mention them back)
+      this.userNameToId.set(message.author.username.toLowerCase(), message.author.id);
+      
+      // Parse mentions
+      const { content, mentions } = this.parseMentions(message);
+      
       // Forward to all agents that have joined this channel
       for (const [id, connection] of this.connections) {
         if (connection.joinedChannels.has(message.channelId)) {
@@ -425,7 +628,9 @@ class CombinedDiscordAxonServer {
               author: message.author.username,
               authorId: message.author.id,
               isBot: message.author.bot,
-              content: message.content,
+              content: content, // Parsed content with human-readable mentions
+              rawContent: message.content, // Original content with Discord IDs
+              mentions: mentions, // Structured mention metadata
               timestamp: message.createdAt.toISOString(),
               guildId: message.guildId,
               guildName: message.guild?.name,
@@ -443,6 +648,11 @@ class CombinedDiscordAxonServer {
     this.discord.on('messageUpdate', async (oldMessage, newMessage) => {
       // Forward to all agents that have joined this channel
       // Note: We don't filter bot messages here - agents need to know about edits to all messages
+      
+      // Parse mentions for both old and new content
+      const oldParsed = oldMessage.content ? this.parseMentions(oldMessage) : { content: '', mentions: null };
+      const newParsed = newMessage.content ? this.parseMentions(newMessage) : { content: '', mentions: null };
+      
       for (const [id, connection] of this.connections) {
         if (connection.joinedChannels.has(newMessage.channelId)) {
           connection.ws.send(JSON.stringify({
@@ -453,8 +663,11 @@ class CombinedDiscordAxonServer {
               author: newMessage.author?.username,
               authorId: newMessage.author?.id,
               isBot: newMessage.author?.bot || false,
-              content: newMessage.content,
-              oldContent: oldMessage.content,
+              content: newParsed.content, // Parsed new content
+              rawContent: newMessage.content, // Original new content
+              oldContent: oldParsed.content, // Parsed old content
+              rawOldContent: oldMessage.content, // Original old content
+              mentions: newParsed.mentions, // Mention metadata
               timestamp: newMessage.editedAt?.toISOString() || newMessage.createdAt?.toISOString(),
               guildId: newMessage.guildId,
               guildName: newMessage.guild?.name,
@@ -507,6 +720,22 @@ class CombinedDiscordAxonServer {
           
           connection.joinedChannels.add(channelId);
           
+          // Cache channel name for reverse lookups
+          this.channelNameToId.set(channel.name.toLowerCase(), channel.id);
+          
+          // Cache guild members for reverse user lookups
+          if (channel.guild) {
+            const members = await channel.guild.members.fetch({ limit: 100 });
+            members.forEach(member => {
+              this.userNameToId.set(member.user.username.toLowerCase(), member.user.id);
+            });
+            
+            // Cache roles for reverse role lookups
+            channel.guild.roles.cache.forEach(role => {
+              this.roleNameToId.set(role.name.toLowerCase(), role.id);
+            });
+          }
+          
           // Get messages after lastMessageId if provided, otherwise get recent messages
           const messages = await channel.messages.fetch({ 
             limit: scrollback,
@@ -524,13 +753,20 @@ class CombinedDiscordAxonServer {
             channelName: channel.name,
             guildId: channel.guildId,
             guildName: channel.guild?.name,
-            messages: orderedMessages.map(m => ({
-              channelId: m.channelId,
-              messageId: m.id,
-              author: m.author.username,
-              content: m.content,
-              timestamp: m.createdAt.toISOString()
-            }))
+            messages: orderedMessages.map(m => {
+              const { content, mentions } = this.parseMentions(m);
+              return {
+                channelId: m.channelId,
+                messageId: m.id,
+                author: m.author.username,
+                authorId: m.author.id,
+                isBot: m.author.bot,
+                content: content, // Parsed content with human-readable mentions
+                rawContent: m.content, // Original content with Discord IDs
+                mentions: mentions, // Structured mention metadata
+                timestamp: m.createdAt.toISOString()
+              };
+            })
           }));
           
           // Send joined confirmation with channel info
@@ -579,8 +815,11 @@ class CombinedDiscordAxonServer {
             throw new Error('Channel not found or not a text channel');
           }
           
-          const sentMessage = await channel.send(message);
-          console.log(`[Server] Sent message to ${channel.name}: ${message} (ID: ${sentMessage.id})`);
+          // Convert human-readable mentions to Discord IDs
+          const discordMessage = await this.unparseMentions(message, channel.guildId);
+          
+          const sentMessage = await channel.send(discordMessage);
+          console.log(`[Server] Sent message to ${channel.name}: ${message} -> ${discordMessage} (ID: ${sentMessage.id})`);
           
           // Send confirmation back to client with message ID
           connection.ws.send(JSON.stringify({

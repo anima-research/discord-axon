@@ -458,7 +458,11 @@ export function createModule(env: IAxonEnvironmentV2): any {
           messages: messages.map((m: any) => ({
             messageId: m.messageId,
             content: m.content,
-            author: m.author
+            rawContent: m.rawContent,
+            mentions: m.mentions,
+            author: m.author,
+            authorId: m.authorId,
+            isBot: m.isBot
           }))
         }
       });
@@ -489,7 +493,17 @@ export function createModule(env: IAxonEnvironmentV2): any {
           source: { elementId: this.element?.id || 'discord', elementPath: [] },
           timestamp: Date.now(),
           payload: {
-            ...message,
+            channelId: message.channelId,
+            messageId: message.messageId,
+            author: message.author,
+            authorId: message.authorId,
+            isBot: message.isBot,
+            content: message.content,
+            rawContent: message.rawContent,
+            mentions: message.mentions,
+            timestamp: message.timestamp,
+            channelName,
+            guildName,
             streamId,
             streamType: 'discord',
             isHistory: true
@@ -532,13 +546,23 @@ export function createModule(env: IAxonEnvironmentV2): any {
       // Build stream ID
       const streamId = this.buildStreamId(msg.channelName, msg.guildName);
       
-      // Emit message event
+      // Emit message event with all fields including mentions
       this.emit({
         topic: 'discord:message',
         source: { elementId: this.element?.id || 'discord', elementPath: [] },
         timestamp: Date.now(),
         payload: {
-          ...msg,
+          channelId: msg.channelId,
+          messageId: msg.messageId,
+          author: msg.author,
+          authorId: msg.authorId,
+          isBot: msg.isBot,
+          content: msg.content, // Parsed content with human-readable mentions
+          rawContent: msg.rawContent, // Original content with Discord IDs
+          mentions: msg.mentions, // Structured mention metadata
+          timestamp: msg.timestamp,
+          channelName: msg.channelName,
+          guildName: msg.guildName,
           streamId,
           streamType: 'discord'
         }

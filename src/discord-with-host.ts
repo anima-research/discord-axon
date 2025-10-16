@@ -58,16 +58,16 @@ async function main() {
     console.log('⚠️  No ANTHROPIC_API_KEY found, using mock provider');
     const mockProvider = new MockLLMProvider();
     
-    // Set some responses for the mock
+    // Set some responses for the mock - including mentions for testing
     mockProvider.setResponses([
-      "Hello! I'm Connectome, your AI assistant. How can I help you today?",
-      "That's an interesting question! Let me think about that...",
-      "I'm connected to Discord and ready to chat!",
-      "Feel free to ask me anything - I'm here to help.",
-      "I see you're testing the new Host architecture. It's working great!",
-      "The Host handles all the infrastructure concerns like persistence and restoration.",
-      "Components can now declare their dependencies with @reference decorators.",
-      "This makes the whole system much more modular and maintainable.",
+      "Hello <@antra_tessera>! Nice to meet you! Feel free to check <#general> for updates.",
+      "Sure thing! Hey <@antra_tessera>, you should definitely check out <#general> for the latest info!",
+      "I'm connected to Discord and ready to chat! <@antra_tessera> let me know if you need anything!",
+      "Feel free to ask me anything - I'm here to help <@antra_tessera>!",
+      "Hey <@antra_tessera>! The mention system is working! Check <#general> to see more.",
+      "Testing mentions: Hello <@antra_tessera>, please visit <#general> when you can!",
+      "Components can now declare their dependencies, and I can mention <@antra_tessera> too!",
+      "This makes the whole system much more modular, right <@antra_tessera>? See <#general>!",
     ]);
     
     llmProvider = mockProvider;
@@ -108,13 +108,14 @@ You can join channels, send messages, and have conversations with users.
 You remember all previous conversations and can reference them.
 Be friendly, helpful, and engaging!`,
     llmProviderId: 'provider:llm.primary',
+    botToken: botToken,  // Pass token directly for now (TODO: use Host's external system)
     discord: {
       host: 'localhost:8081',
       guild: guildId || '',
       modulePort: 8080,  // The Discord AXON server runs module serving on 8080
       autoJoinChannels: channelId ? [channelId] : []
     }
-  });
+  } as any);
   
   // Start the application
   try {

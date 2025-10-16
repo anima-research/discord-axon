@@ -64,7 +64,7 @@ class DiscordMessageReceptor extends BaseReceptor {
   
   transform(event: SpaceEvent, state: ReadonlyVEILState): any[] {
     const payload = event.payload as any;
-    const { channelId, channelName, author, content, messageId, streamId, streamType, isHistory } = payload;
+    const { channelId, channelName, author, authorId, content, rawContent, mentions, messageId, streamId, streamType, isHistory, isBot } = payload;
     
     // Check if we've already processed this message (de-dup against VEIL)
     const lastReadFacet = state.facets.get(`discord-lastread-${channelId}`);
@@ -85,17 +85,26 @@ class DiscordMessageReceptor extends BaseReceptor {
       facet: {
         id: `discord-msg-${messageId}`,
         type: 'event',
-        content: `${author}: ${content}`,
+        content: `${author}: ${content}`, // Use parsed content with human-readable mentions
         state: {
           source: 'discord',
           eventType: 'discord-message',
-          metadata: { channelName, author, isHistory }
+          metadata: { 
+            channelName, 
+            author,
+            authorId,
+            isBot,
+            isHistory,
+            rawContent, // Original content with Discord IDs
+            mentions // Structured mention metadata
+          }
         },
         streamId,
         streamType,
         attributes: {
           channelId,
-          messageId
+          messageId,
+          mentions // Also include in attributes for easy access
         }
       }
     });
@@ -209,9 +218,16 @@ class DiscordHistorySyncReceptor extends BaseReceptor {
             state: {
               source: 'discord-history-sync',
               eventType: 'discord-message-deleted-offline',
-              metadata: { messageId, channelId }
+              metadata: { 
+                messageId, 
+                channelId 
+              }
             },
-            attributes: { messageId, channelId }
+            attributes: { 
+              messageId, 
+              channelId 
+            },
+            ephemeral: true
           }
         });
         
@@ -227,7 +243,20 @@ class DiscordHistorySyncReceptor extends BaseReceptor {
           type: 'rewriteFacet',
           id: veilMsg.id,
           changes: {
-            content: `${discordMsg.author}: ${discordMsg.content}`
+            content: `${discordMsg.author}: ${discordMsg.content}`, // Parsed content
+            state: {
+              source: 'discord',
+              eventType: 'discord-message',
+              metadata: {
+                ...((veilMsg as any).state?.metadata || {}),
+                rawContent: discordMsg.rawContent, // Update raw content
+                mentions: discordMsg.mentions // Update mention metadata
+              }
+            },
+            attributes: {
+              ...((veilMsg as any).attributes || {}),
+              mentions: discordMsg.mentions // Update mention metadata in attributes
+            }
           }
         });
         
@@ -245,14 +274,18 @@ class DiscordHistorySyncReceptor extends BaseReceptor {
                 messageId, 
                 channelId,
                 oldContent: this.extractContent(veilContent),
-                newContent: discordMsg.content
+                newContent: discordMsg.content,
+                rawOldContent: (veilMsg as any).state?.metadata?.rawContent,
+                rawNewContent: discordMsg.rawContent,
+                mentions: discordMsg.mentions
               }
             },
             attributes: { 
               messageId, 
               channelId,
               oldContent: this.extractContent(veilContent),
-              newContent: discordMsg.content
+              newContent: discordMsg.content,
+              mentions: discordMsg.mentions
             }
           }
         });
@@ -281,7 +314,7 @@ class DiscordMessageUpdateReceptor extends BaseReceptor {
   
   transform(event: SpaceEvent, state: ReadonlyVEILState): any[] {
     const payload = event.payload as any;
-    const { messageId, content, oldContent, author, channelName } = payload;
+    const { messageId, content, rawContent, oldContent, rawOldContent, mentions, author, authorId, channelName, isBot } = payload;
     
     console.log(`[DiscordMessageUpdateReceptor] Message ${messageId} edited by ${author}`);
     
@@ -295,7 +328,22 @@ class DiscordMessageUpdateReceptor extends BaseReceptor {
         type: 'rewriteFacet',
         id: facetId,
         changes: {
-          content: `${author}: ${content}`
+          content: `${author}: ${content}`, // Use parsed content
+          state: {
+            source: 'discord',
+            eventType: 'discord-message',
+            metadata: {
+              channelName,
+              author,
+              authorId,
+              isBot,
+              rawContent, // Updated raw content
+              mentions // Updated mention metadata
+            }
+          },
+          attributes: {
+            mentions // Updated mention metadata in attributes
+          }
         }
       });
       
@@ -312,16 +360,21 @@ class DiscordMessageUpdateReceptor extends BaseReceptor {
             metadata: {
               messageId,
               author,
+              authorId,
               channelName,
-              oldContent,
-              newContent: content
+              oldContent, // Parsed old content
+              newContent: content, // Parsed new content
+              rawOldContent, // Original old content
+              rawNewContent: rawContent, // Original new content
+              mentions // New mention metadata
             }
           },
           attributes: {
             messageId,
             oldContent,
             newContent: content,
-            author
+            author,
+            mentions
           }
         }
       });
@@ -605,12 +658,15 @@ export class DiscordApplication implements ConnectomeApplication {
         // Always try to reconnect in case the AXON server was restarted
         console.log('🔄 Ensuring Discord element is connected to AXON...');
         // Build the AXON URL - use new afferent module
+        // TODO: Token should come from Host's external system, but for now pass directly
+        const botToken = (this.config as any).botToken || '';
         const modulePort = this.config.discord.modulePort || 8080;
         const axonUrl = `axon://localhost:${modulePort}/modules/discord-afferent/manifest?` + 
           `host=${encodeURIComponent(this.config.discord.host)}&` +
           `path=${encodeURIComponent('/ws')}&` +
           `guild=${encodeURIComponent(this.config.discord.guild)}&` +
-          `agent=${encodeURIComponent(this.config.agentName)}`;
+          `agent=${encodeURIComponent(this.config.agentName)}&` +
+          `token=${encodeURIComponent(botToken)}`;
         
         try {
           await axonLoader.connect(axonUrl);
@@ -625,12 +681,15 @@ export class DiscordApplication implements ConnectomeApplication {
       const axonLoader = new AxonLoaderComponent();
       
       // Build the AXON URL - use discord-afferent module
+      // TODO: Token should come from Host's external system, but for now pass directly
+      const botToken = (this.config as any).botToken || '';
       const modulePort = this.config.discord.modulePort || 8080;
       const axonUrl = `axon://localhost:${modulePort}/modules/discord-afferent/manifest?` + 
         `host=${encodeURIComponent(this.config.discord.host)}&` +
         `path=${encodeURIComponent('/ws')}&` +
         `guild=${encodeURIComponent(this.config.discord.guild)}&` +
-        `agent=${encodeURIComponent(this.config.agentName)}`;
+        `agent=${encodeURIComponent(this.config.agentName)}&` +
+        `token=${encodeURIComponent(botToken)}`;
       
       // Add Discord element to space first
       space.addChild(discordElem);
@@ -684,12 +743,13 @@ export class DiscordApplication implements ConnectomeApplication {
     // so they're available both on fresh start and restore
     
     if (this.config.discord.autoJoinChannels && this.config.discord.autoJoinChannels.length > 0 && discordElem) {
-      console.log('➕ Adding auto-join effector for channels:', this.config.discord.autoJoinChannels);
+      console.log('➕ Mounting auto-join effector for channels:', this.config.discord.autoJoinChannels);
       const autoJoinEffector = new DiscordAutoJoinEffector(
         this.config.discord.autoJoinChannels,
         discordElem
       );
-      space.addEffector(autoJoinEffector);
+      // Just mount - auto-registration handles the rest!
+      await space.addComponentAsync(autoJoinEffector);
     }
     
     // Add agent element to space only if it's a new element
@@ -727,29 +787,31 @@ export class DiscordApplication implements ConnectomeApplication {
   async onStart(space: Space, veilState: VEILStateManager): Promise<void> {
     console.log('🚀 Discord application started!');
     
-    // Register Discord RETM components (application-level, not element-specific)
-    console.log('➕ Registering Discord Receptors and Effectors');
+    // Mount Discord RETM components (auto-registration handles the rest!)
+    console.log('➕ Mounting Discord Receptors and Effectors');
     const discordElem = space.children.find(c => c.name === 'discord');
-    space.addReceptor(new DiscordConnectedReceptor());
-    space.addReceptor(new DiscordMessageReceptor());
-    space.addReceptor(new DiscordHistorySyncReceptor());  // Detects offline edits/deletes
-    space.addReceptor(new DiscordMessageUpdateReceptor());
-    space.addReceptor(new DiscordMessageDeleteReceptor());
+    
+    // Just mount - auto-registration happens automatically
+    await space.addComponentAsync(new DiscordConnectedReceptor());
+    await space.addComponentAsync(new DiscordMessageReceptor());
+    await space.addComponentAsync(new DiscordHistorySyncReceptor());
+    await space.addComponentAsync(new DiscordMessageUpdateReceptor());
+    await space.addComponentAsync(new DiscordMessageDeleteReceptor());
+    
     if (discordElem) {
-      space.addEffector(new DiscordSpeechEffector(discordElem));
+      await space.addComponentAsync(new DiscordSpeechEffector(discordElem));
     }
     
-    // Register RETM components for agent processing
-    // Find the agent element and component
+    // Mount RETM components for agent processing
     const agentElem = space.children.find(child => child.name === 'discord-agent');
     if (agentElem) {
       const agentComponent = agentElem.getComponents(AgentComponent)[0];
       if (agentComponent && (agentComponent as any).agent) {
         const agent = (agentComponent as any).agent as AgentInterface;
         
-        console.log('➕ Registering AgentEffector and ContextTransform');
-        space.addEffector(new AgentEffector(agentElem, agent));
-        space.addTransform(new ContextTransform(veilState));
+        console.log('➕ Mounting AgentEffector and ContextTransform');
+        await space.addComponentAsync(new AgentEffector(agentElem, agent));
+        await space.addComponentAsync(new ContextTransform(veilState));
       }
     }
     
