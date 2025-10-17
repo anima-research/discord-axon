@@ -79,6 +79,7 @@ class DiscordMessageReceptor extends BaseReceptor {
     console.log(`[DiscordMessageReceptor] Processing message from ${author}: "${content}"${isHistory ? ' (history)' : ''}${reply ? ' (reply)' : ''}`);
     
     const deltas: any[] = [];
+    const botUserId = '1382891708513128485'; // TODO: Make this configurable
     
     // Format content with reply syntax if this is a reply
     let formattedContent = content;
@@ -98,13 +99,33 @@ class DiscordMessageReceptor extends BaseReceptor {
       }
     }
     
+    // Create speech facet as nested child
+    const speechFacet: any = {
+      id: `speech-${messageId}`,
+      type: 'speech',
+      content: formattedContent,
+      streamId,
+      streamType,
+      state: {
+        speakerId: `discord:${authorId}`,
+        speaker: author
+      }
+    };
+    
+    // If this is from the bot itself, mark it as agent-generated
+    if (authorId === botUserId) {
+      speechFacet.agentId = 'connectome'; // TODO: Make configurable
+      speechFacet.agentName = 'Connectome';
+    }
+    
     // Create message facet (eventType must be in state for proper serialization!)
+    // Message is the platform-specific container, speech is the content
     deltas.push({
       type: 'addFacet',
       facet: {
         id: `discord-msg-${messageId}`,
         type: 'event',
-        content: `${author}: ${formattedContent}`, // Include reply context in content
+        // No content - content is in the nested speech facet
         state: {
           source: 'discord',
           eventType: 'discord-message',
@@ -126,7 +147,8 @@ class DiscordMessageReceptor extends BaseReceptor {
           messageId,
           mentions, // Also include in attributes for easy access
           reply // Reply information for quick access
-        }
+        },
+        children: [speechFacet] // Speech nested inside message
       }
     });
     
@@ -137,34 +159,48 @@ class DiscordMessageReceptor extends BaseReceptor {
       state
     ));
     
-    // Only activate agent for live messages, not history
+    // Only activate agent for live messages (not history)
+    // AND only if the bot is mentioned or replied to
     if (!isHistory) {
-      console.log(`[DiscordMessageReceptor] Creating agent activation`);
-      deltas.push({
-        type: 'addFacet',
-        facet: {
-          id: `activation-${messageId}`,
-          type: 'agent-activation',
-          content: `Discord message from ${author}`,
-          state: {
-            source: 'discord-message',
-            reason: 'discord_message',
-            priority: 'normal',
-            channelId,
-            messageId,
-            author,
-            streamRef: {
-              streamId,
-              streamType,
-              metadata: {
-                channelId,
-                channelName
+      const botUserId = '1382891708513128485'; // TODO: Make this configurable
+      
+      // Check if bot is mentioned
+      const botMentioned = mentions?.users?.some((u: any) => u.id === botUserId);
+      
+      // Check if this is a reply to the bot
+      const replyingToBot = reply?.authorId === botUserId;
+      
+      if (botMentioned || replyingToBot) {
+        const reason = botMentioned ? 'bot_mentioned' : 'bot_replied_to';
+        console.log(`[DiscordMessageReceptor] Creating agent activation (${reason})`);
+        deltas.push({
+          type: 'addFacet',
+          facet: {
+            id: `activation-${messageId}`,
+            type: 'agent-activation',
+            // No content - activations are metadata, not renderable content
+            state: {
+              source: 'discord-message',
+              reason,
+              priority: 'normal',
+              channelId,
+              messageId,
+              author,
+              streamRef: {
+                streamId,
+                streamType,
+                metadata: {
+                  channelId,
+                  channelName
+                }
               }
-            }
-          },
-          ephemeral: true
-        }
-      });
+            },
+            ephemeral: true
+          }
+        });
+      } else {
+        console.log(`[DiscordMessageReceptor] Skipping activation (bot not mentioned or replied to)`);
+      }
     }
     
     return deltas;

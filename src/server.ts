@@ -617,6 +617,19 @@ class CombinedDiscordAxonServer {
       // Parse mentions
       const { content, mentions } = this.parseMentions(message);
       
+      // Extract reply information
+      let replyInfo = null;
+      if (message.reference && message.reference.messageId) {
+        // Try to get the referenced message from cache
+        const referencedMessage = message.channel.messages.cache.get(message.reference.messageId);
+        replyInfo = {
+          messageId: message.reference.messageId,
+          author: referencedMessage?.author.username,
+          authorId: referencedMessage?.author.id
+        };
+        console.log(`[Server] Reply detected: user ${message.author.username} replying to message ${message.reference.messageId} (author: ${replyInfo.authorId})`);
+      }
+      
       // Forward to all agents that have joined this channel
       for (const [id, connection] of this.connections) {
         if (connection.joinedChannels.has(message.channelId)) {
@@ -631,6 +644,7 @@ class CombinedDiscordAxonServer {
               content: content, // Parsed content with human-readable mentions
               rawContent: message.content, // Original content with Discord IDs
               mentions: mentions, // Structured mention metadata
+              reply: replyInfo, // Reply information if this is a reply
               timestamp: message.createdAt.toISOString(),
               guildId: message.guildId,
               guildName: message.guild?.name,
