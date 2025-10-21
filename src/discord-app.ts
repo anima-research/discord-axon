@@ -496,16 +496,38 @@ class DiscordMessageDeleteReceptor extends BaseReceptor {
 
 /**
  * Effector: Auto-joins Discord channels when connected
+ * Config-based for VEIL persistence
  */
 class DiscordAutoJoinEffector extends BaseEffector {
   facetFilters = [{ type: 'event' }];
   
-  constructor(private channels: string[], private discordElement: Element) {
-    super();
+  private discordElement?: Element;
+  private channels: string[] = [];
+  
+  async onMount(): Promise<void> {
+    // Get discord element from config (injected via config.discordElementId)
+    const space = this.element?.findSpace();
+    const config = (this as any).config || {};
+    const discordElementId = config.discordElementId;
+    this.channels = config.channels || [];
+    
+    if (discordElementId && space) {
+      this.discordElement = space.children.find(c => c.id === discordElementId);
+    }
+    
+    if (!this.discordElement) {
+      console.warn('[DiscordAutoJoinEffector] Discord element not found, will search by name');
+      this.discordElement = space?.children.find(c => c.name === 'discord');
+    }
   }
   
   async process(changes: FacetDelta[], state: ReadonlyVEILState): Promise<EffectorResult> {
     const events: SpaceEvent[] = [];
+    
+    // Skip if not configured yet
+    if (!this.discordElement || !this.channels || this.channels.length === 0) {
+      return { events };
+    }
     
     // Check if we have a discord:connected facet
     const hasConnected = changes.some(
@@ -889,17 +911,6 @@ export class DiscordApplication implements ConnectomeApplication {
       console.log('✅ Found existing agent element from persistence');
     }
     
-    // Create auto-join effector if configured
-    if (this.config.discord.autoJoinChannels && this.config.discord.autoJoinChannels.length > 0 && discordElem) {
-      console.log('➕ Mounting auto-join effector for channels:', this.config.discord.autoJoinChannels);
-      const autoJoinEffector = new DiscordAutoJoinEffector(
-        this.config.discord.autoJoinChannels,
-        discordElem
-      );
-      // Just mount - auto-registration handles the rest!
-      await space.addComponentAsync(autoJoinEffector);
-    }
-    
     // Subscribe to agent response events
     space.subscribe('agent:frame-ready');
     
@@ -943,6 +954,7 @@ export class DiscordApplication implements ConnectomeApplication {
     registry.register('AxonLoaderComponent', AxonLoaderComponent);
     registry.register('AgentComponent', AgentComponent);
     registry.register('DiscordAutoJoinComponent', DiscordAutoJoinComponent);
+    registry.register('DiscordAutoJoinEffector', DiscordAutoJoinEffector);
     
     // Register RETM components (stateless but need to be restored)
     registry.register('ElementRequestReceptor', ElementRequestReceptor);
@@ -1008,6 +1020,24 @@ export class DiscordApplication implements ConnectomeApplication {
           config: { discordElementId: discordElem.id }
         }
       });
+      
+      // DiscordAutoJoinEffector also needs discord element
+      if (this.config.discord.autoJoinChannels && this.config.discord.autoJoinChannels.length > 0) {
+        space.emit({
+          topic: 'component:add',
+          source: space.getRef(),
+          timestamp: Date.now(),
+          payload: {
+            elementId: 'root',
+            componentType: 'DiscordAutoJoinEffector',
+            componentClass: 'effector',
+            config: {
+              channels: this.config.discord.autoJoinChannels,
+              discordElementId: discordElem.id
+            }
+          }
+        });
+      }
     }
     
     // AgentEffector and ContextTransform for agent processing
