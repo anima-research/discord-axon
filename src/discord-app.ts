@@ -500,32 +500,43 @@ class DiscordMessageDeleteReceptor extends BaseReceptor {
  */
 class DiscordAutoJoinEffector extends BaseEffector {
   facetFilters = [{ type: 'event' }];
-  
+
   private discordElement?: Element;
+  private discordElementId?: string;
   private channels: string[] = [];
-  
+
   async onMount(): Promise<void> {
-    // Get discord element from config (injected via config.discordElementId)
-    const space = this.element?.findSpace();
+    // Store config but don't look up element yet - defer to getDiscordElement() for lazy lookup
+    // This allows the effector to be created before the discord element exists
     const config = (this as any).config || {};
-    const discordElementId = config.discordElementId;
+    this.discordElementId = config.discordElementId;
     this.channels = config.channels || [];
-    
-    if (discordElementId && space) {
-      this.discordElement = space.children.find(c => c.id === discordElementId);
-    }
-    
-    if (!this.discordElement) {
-      console.warn('[DiscordAutoJoinEffector] Discord element not found, will search by name');
-      this.discordElement = space?.children.find(c => c.name === 'discord');
-    }
   }
-  
+
+  private getDiscordElement(): Element | null {
+    // Lazy lookup: find discord element if we don't have it yet but have an ID
+    if (!this.discordElement && this.discordElementId) {
+      const space = this.element?.findSpace();
+      if (space) {
+        this.discordElement = space.children.find(c => c.id === this.discordElementId || c.name === this.discordElementId);
+        if (!this.discordElement) {
+          // Element might not exist yet during early initialization - that's okay
+          return null;
+        }
+      }
+    }
+
+    return this.discordElement || null;
+  }
+
   async process(changes: FacetDelta[], state: ReadonlyVEILState): Promise<EffectorResult> {
     const events: SpaceEvent[] = [];
-    
-    // Skip if not configured yet
-    if (!this.discordElement || !this.channels || this.channels.length === 0) {
+
+    // Lazy lookup of discord element
+    const discordElement = this.getDiscordElement();
+
+    // Skip if not configured yet or discord element not available
+    if (!discordElement || !this.channels || this.channels.length === 0) {
       return { events };
     }
     
@@ -540,13 +551,13 @@ class DiscordAutoJoinEffector extends BaseEffector {
     }
     
     console.log('🤖 Discord connected! Auto-joining channels:', this.channels);
-    
+
     // Call join on the Discord afferent
     for (const channelId of this.channels) {
       console.log(`📢 Calling join for channel: ${channelId}`);
-      
+
       // Find the Discord afferent (or component) and call join
-      const components = this.discordElement.components as any[];
+      const components = discordElement.components as any[];
       for (const comp of components) {
         if (comp.join && typeof comp.join === 'function') {
           try {
@@ -576,28 +587,42 @@ class DiscordAutoJoinEffector extends BaseEffector {
  */
 class DiscordSpeechEffector extends BaseEffector {
   facetFilters = [{ type: 'speech' }];
-  
+
   private discordElement?: Element;
-  
+  private discordElementId?: string;
+
   async onMount(): Promise<void> {
-    // Get discord element from Space (injected via config.discordElementId)
-    const space = this.element?.findSpace();
+    // Store config but don't look up element yet - defer to getDiscordElement() for lazy lookup
+    // This allows the effector to be created before the discord element exists
     const config = (this as any).config || {};
-    const discordElementId = config.discordElementId;
-    
-    if (discordElementId && space) {
-      this.discordElement = space.children.find(c => c.id === discordElementId);
+    this.discordElementId = config.discordElementId;
+  }
+
+  private getDiscordElement(): Element | null {
+    // Lazy lookup: find discord element if we don't have it yet but have an ID
+    if (!this.discordElement && this.discordElementId) {
+      const space = this.element?.findSpace();
+      if (space) {
+        this.discordElement = space.children.find(c => c.id === this.discordElementId || c.name === this.discordElementId);
+        if (!this.discordElement) {
+          // Element might not exist yet during early initialization - that's okay
+          return null;
+        }
+      }
     }
-    
-    if (!this.discordElement) {
-      console.warn('[DiscordSpeechEffector] Discord element not found, will search by name');
-      this.discordElement = space?.children.find(c => c.name === 'discord');
-    }
+
+    return this.discordElement || null;
   }
   
   async process(changes: FacetDelta[], state: ReadonlyVEILState): Promise<EffectorResult> {
     const events: SpaceEvent[] = [];
-    
+
+    // Lazy lookup of discord element
+    const discordElement = this.getDiscordElement();
+    if (!discordElement) {
+      return { events }; // Skip if discord element not available yet
+    }
+
     for (const change of changes) {
       if (change.type !== 'added' || change.facet.type !== 'speech') continue;
       
@@ -650,13 +675,9 @@ class DiscordSpeechEffector extends BaseEffector {
       }
       
       console.log(`[DiscordSpeechEffector] Sending to channel ${channelId}: "${content}"`);
-      
-      // Call send on the Discord afferent
-      if (!this.discordElement) {
-        console.error('[DiscordSpeechEffector] Discord element not available');
-        continue;
-      }
-      const components = this.discordElement.components as any[];
+
+      // Call send on the Discord afferent (already checked discordElement at start of process)
+      const components = discordElement.components as any[];
       for (const comp of components) {
         if (comp.send && typeof comp.send === 'function') {
           try {
