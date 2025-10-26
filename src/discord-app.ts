@@ -853,6 +853,7 @@ export class DiscordApplication implements ConnectomeApplication {
         timestamp: Date.now(),
         payload: {
           parentId: 'root',
+          elementId: 'discord',  // ✨ Predefined stable ID!
           name: 'discord',
           elementType: 'Element',
           components: [
@@ -891,6 +892,7 @@ export class DiscordApplication implements ConnectomeApplication {
         timestamp: Date.now(),
         payload: {
           parentId: 'root',
+          elementId: 'discord-agent',  // ✨ Predefined stable ID!
           name: 'discord-agent',
           elementType: 'Element',
           components: [
@@ -927,6 +929,7 @@ export class DiscordApplication implements ConnectomeApplication {
         timestamp: Date.now(),
         payload: {
           parentId: 'root',
+          elementId: 'discord-control',  // ✨ Predefined stable ID!
           name: 'discord-control',
           elementType: 'Element',
           components: [
@@ -1008,67 +1011,62 @@ export class DiscordApplication implements ConnectomeApplication {
     }
     
     // DiscordSpeechEffector needs reference to discord element
-    if (discordElem) {
+    // Use stable 'discord' ID (not discordElem.id which might not be set yet)
+    space.emit({
+      topic: 'component:add',
+      source: space.getRef(),
+      timestamp: Date.now(),
+      payload: {
+        elementId: 'root',
+        componentType: 'DiscordSpeechEffector',
+        componentClass: 'effector',
+        config: { discordElementId: 'discord' }  // ✨ Stable ID!
+      }
+    });
+    
+    // DiscordAutoJoinEffector also needs discord element
+    if (this.config.discord.autoJoinChannels && this.config.discord.autoJoinChannels.length > 0) {
       space.emit({
         topic: 'component:add',
         source: space.getRef(),
         timestamp: Date.now(),
         payload: {
           elementId: 'root',
-          componentType: 'DiscordSpeechEffector',
+          componentType: 'DiscordAutoJoinEffector',
           componentClass: 'effector',
-          config: { discordElementId: discordElem.id }
+          config: {
+            channels: this.config.discord.autoJoinChannels,
+            discordElementId: 'discord'  // ✨ Stable ID!
+          }
         }
       });
-      
-      // DiscordAutoJoinEffector also needs discord element
-      if (this.config.discord.autoJoinChannels && this.config.discord.autoJoinChannels.length > 0) {
-        space.emit({
-          topic: 'component:add',
-          source: space.getRef(),
-          timestamp: Date.now(),
-          payload: {
-            elementId: 'root',
-            componentType: 'DiscordAutoJoinEffector',
-            componentClass: 'effector',
-            config: {
-              channels: this.config.discord.autoJoinChannels,
-              discordElementId: discordElem.id
-            }
-          }
-        });
-      }
     }
     
     // AgentEffector and ContextTransform for agent processing
-    if (agentElem) {
-      const agentComponent = agentElem.getComponents(AgentComponent)[0];
-      if (agentComponent && (agentComponent as any).agent) {
-        space.emit({
-          topic: 'component:add',
-          source: space.getRef(),
-          timestamp: Date.now(),
-          payload: {
-            elementId: 'root',
-            componentType: 'AgentEffector',
-            componentClass: 'effector',
-            config: { agentElementId: agentElem.id }
-          }
-        });
-        
-        space.emit({
-          topic: 'component:add',
-          source: space.getRef(),
-          timestamp: Date.now(),
-          payload: {
-            elementId: 'root',
-            componentType: 'ContextTransform',
-            componentClass: 'transform',
-            config: {}
-          }
-        });
+    // Use stable 'discord-agent' ID
+    space.emit({
+      topic: 'component:add',
+      source: space.getRef(),
+      timestamp: Date.now(),
+      payload: {
+        elementId: 'root',
+        componentType: 'AgentEffector',
+        componentClass: 'effector',
+        config: { agentElementId: 'discord-agent' }  // ✨ Stable ID!
       }
-    }
+    });
+        
+    space.emit({
+      topic: 'component:add',
+      source: space.getRef(),
+      timestamp: Date.now(),
+      payload: {
+        elementId: 'root',
+        componentType: 'ContextTransform',
+        componentClass: 'transform',
+        config: {}
+      }
+    });
     
     // Wait for components to be created (next frame)
     await new Promise(resolve => setTimeout(resolve, 100));
