@@ -11,6 +11,18 @@ export function createModule(env: IAxonEnvironmentV2) {
   class ElementControlComponent extends InteractiveComponent {
     static persistentProperties: IPersistentMetadata[] = [];
     
+    setupSubscriptions(): void {
+      // Subscribe to element:action events so we can handle action calls
+      this.element.subscribe('element:action');
+      console.log('[ElementControl] Subscribed to element:action');
+    }
+    
+    onRestore(): void {
+      // Re-establish subscriptions after restoration
+      this.setupSubscriptions();
+      console.log('[ElementControl] Restored and re-subscribed');
+    }
+    
     async onMount(): Promise<void> {
       // Call parent to subscribe to frame:start (if it exists)
       if (super.onMount) {
@@ -18,10 +30,7 @@ export function createModule(env: IAxonEnvironmentV2) {
       }
       
       console.log('[ElementControl] Component mounted');
-      
-      // Subscribe to element:action events so we can handle action calls
-      this.element.subscribe('element:action');
-      console.log('[ElementControl] Subscribed to element:action');
+      this.setupSubscriptions();
       
       // Register actions with descriptions
       this.registerAction('createElement', async (params: any) => {
