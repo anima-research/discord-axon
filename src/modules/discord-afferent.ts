@@ -286,10 +286,10 @@ export function createModule(env: IAxonEnvironmentV2): any {
           }));
         };
         
-        this.ws.onmessage = (event: any) => {
+        this.ws.onmessage = async (event: any) => {
           try {
             const msg = JSON.parse(event.data);
-            this.handleMessage(msg);
+            await this.handleMessage(msg);
           } catch (error) {
             console.error('[DiscordAfferent] Failed to parse message:', error);
           }
@@ -314,7 +314,7 @@ export function createModule(env: IAxonEnvironmentV2): any {
       }
     }
     
-    private handleMessage(msg: any): void {
+    private async handleMessage(msg: any): Promise<void> {
       console.log('[DiscordAfferent] Received:', msg.type);
       
       switch (msg.type) {
@@ -335,6 +335,14 @@ export function createModule(env: IAxonEnvironmentV2): any {
               reconnect: this.connectionAttempts > 1
             }
           });
+          
+          // Auto-join configured channels after authentication
+          if (config.autoJoinChannels && Array.isArray(config.autoJoinChannels)) {
+            console.log(`[DiscordAfferent] Auto-joining ${config.autoJoinChannels.length} channels...`);
+            for (const channelId of config.autoJoinChannels) {
+              await this.join({ channelId });
+            }
+          }
           break;
           
         case 'history':

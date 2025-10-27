@@ -9,7 +9,6 @@ import { ComponentRegistry } from 'connectome-ts/src/persistence/component-regis
 import { BasicAgent } from 'connectome-ts/src/agent/basic-agent';
 import { AgentComponent } from 'connectome-ts/src/agent/agent-component';
 import { persistable, persistent } from 'connectome-ts/src/persistence/decorators';
-import { AxonLoaderComponent } from 'connectome-ts/src/components/axon-loader';
 import { Element } from 'connectome-ts/src/spaces/element';
 import { Component } from 'connectome-ts/src/spaces/component';
 import { SpaceEvent } from 'connectome-ts/src/spaces/types';
@@ -364,7 +363,8 @@ class DiscordHistorySyncReceptor extends BaseReceptor {
     return deltas;
   }
   
-  private extractContent(fullContent: string): string {
+  private extractContent(fullContent: string | undefined): string {
+    if (!fullContent) return '';
     // Extract message content from "Author: content" format
     const match = fullContent.match(/^[^:]+: (.+)$/);
     return match ? match[1] : fullContent;
@@ -847,13 +847,6 @@ export class DiscordApplication implements ConnectomeApplication {
     // Build AXON URL for Discord afferent
     const botToken = (this.config as any).botToken || '';
         const modulePort = this.config.discord.modulePort || 8080;
-    const discordAxonUrl = `axon://localhost:${modulePort}/modules/discord-afferent/manifest?` + 
-          `host=${encodeURIComponent(this.config.discord.host)}&` +
-          `path=${encodeURIComponent('/ws')}&` +
-          `guild=${encodeURIComponent(this.config.discord.guild)}&` +
-      `agent=${encodeURIComponent(this.config.agentName)}&` +
-      `token=${encodeURIComponent(botToken)}`;
-    
     // Create Discord element declaratively via VEIL (only if it doesn't exist)
     let discordElem = space.children.find((child) => child.name === 'discord');
     
@@ -870,8 +863,19 @@ export class DiscordApplication implements ConnectomeApplication {
           elementType: 'Element',
           components: [
             { 
-              type: 'AxonLoaderComponent', 
-              config: { axonUrl: discordAxonUrl } // Will auto-connect in onMount()
+              type: 'DiscordAfferent',
+              config: {
+                host: this.config.discord.host,
+                path: '/ws',
+                guild: this.config.discord.guild,
+                agent: this.config.agentName,
+                token: botToken,
+                autoJoinChannels: this.config.discord.autoJoinChannels || [],
+                _axonMetadata: {
+                  moduleUrl: `http://localhost:${modulePort}/modules/discord-afferent/module`,
+                  manifestUrl: `http://localhost:${modulePort}/modules/discord-afferent/manifest`
+                }
+              }
             }
           ]
         }
@@ -971,7 +975,6 @@ export class DiscordApplication implements ConnectomeApplication {
     
     if (!controlElement) {
       console.log('📋 Creating Discord control panel via element:create event');
-      const controlAxonUrl = 'axon://localhost:8080/modules/discord-control-panel/manifest';
       
       space.emit({
         topic: 'element:create',
@@ -984,8 +987,13 @@ export class DiscordApplication implements ConnectomeApplication {
           elementType: 'Element',
           components: [
             {
-              type: 'AxonLoaderComponent',
-              config: { axonUrl: controlAxonUrl } // Will auto-connect in onMount()
+              type: 'DiscordControlPanelComponent',
+              config: {
+                _axonMetadata: {
+                  moduleUrl: `http://localhost:${modulePort}/modules/discord-control-panel/module`,
+                  manifestUrl: `http://localhost:${modulePort}/modules/discord-control-panel/manifest`
+                }
+              }
             }
           ]
         }
@@ -1002,7 +1010,6 @@ export class DiscordApplication implements ConnectomeApplication {
     
     if (!elementControlElement) {
       console.log('🎮 Creating Element control panel via element:create event');
-      const elementControlUrl = 'axon://localhost:8080/modules/element-control/manifest';
       
       space.emit({
         topic: 'element:create',
@@ -1015,8 +1022,13 @@ export class DiscordApplication implements ConnectomeApplication {
           elementType: 'Element',
           components: [
             {
-              type: 'AxonLoaderComponent',
-              config: { axonUrl: elementControlUrl }
+              type: 'ElementControlComponent',
+              config: {
+                _axonMetadata: {
+                  moduleUrl: `http://localhost:${modulePort}/modules/element-control/module`,
+                  manifestUrl: `http://localhost:${modulePort}/modules/element-control/manifest`
+                }
+              }
             }
           ]
         }
@@ -1035,7 +1047,7 @@ export class DiscordApplication implements ConnectomeApplication {
     const registry = ComponentRegistry;
     
     // Register all components that can be restored
-    registry.register('AxonLoaderComponent', AxonLoaderComponent);
+    // AxonLoaderComponent removed - AXON components are loaded on-demand by maintainer
     registry.register('AgentComponent', AgentComponent);
     registry.register('DiscordAutoJoinComponent', DiscordAutoJoinComponent);
     registry.register('DiscordAutoJoinEffector', DiscordAutoJoinEffector);
@@ -1065,7 +1077,7 @@ export class DiscordApplication implements ConnectomeApplication {
     // This creates element-tree facets that persist across restores
     console.log('➕ Creating Discord RETM components via VEIL');
     
-    let discordElem = space.children.find(c => c.name === 'discord');
+    // Reuse discordElem from earlier
     let agentElem = space.children.find(child => child.name === 'discord-agent');
     
     // Emit component:add events for Space-level components
@@ -1154,41 +1166,8 @@ export class DiscordApplication implements ConnectomeApplication {
     
     console.log('✅ Discord RETM components created via VEIL');
     
-    // Now that all RETM components are registered, trigger AxonLoader connections
-    // This ensures receptors are ready to handle application events (like discord:connected)
-    console.log('🔌 Triggering AxonLoader connections now that RETM infrastructure is ready...');
-    
-    // Re-find elements (don't redeclare)
-    discordElem = space.children.find(c => c.name === 'discord');
-    const controlElem = space.children.find(c => c.name === 'discord-control');
-    const elementControlElem = space.children.find(c => c.name === 'element-control');
-    
-    // Connect discord afferent
-    if (discordElem) {
-      const axonLoader = discordElem.getComponents(AxonLoaderComponent)[0];
-      if (axonLoader && (axonLoader as any).connectNow) {
-        console.log('  📡 Connecting Discord afferent...');
-        await (axonLoader as any).connectNow();
-      }
-    }
-    
-    // Connect control panels
-    if (controlElem) {
-      const axonLoader = controlElem.getComponents(AxonLoaderComponent)[0];
-      if (axonLoader && (axonLoader as any).connectNow) {
-        console.log('  📋 Connecting Discord control panel...');
-        await (axonLoader as any).connectNow();
-      }
-    }
-    
-    if (elementControlElem) {
-      const axonLoader = elementControlElem.getComponents(AxonLoaderComponent)[0];
-      if (axonLoader && (axonLoader as any).connectNow) {
-        console.log('  🎮 Connecting Element control panel...');
-        await (axonLoader as any).connectNow();
-      }
-    }
-    
+    // All AXON modules are now loaded by ElementTreeMaintainer during component creation
+    // Maintainer calls setConnectionParams which triggers connection and auto-join
     console.log('✅ All connections established');
     
     // No need to register tools - agent discovers them from action-definition facets in VEIL!
@@ -1197,62 +1176,10 @@ export class DiscordApplication implements ConnectomeApplication {
   async onRestore(space: Space, veilState: VEILStateManager): Promise<void> {
     console.log('♻️ Discord application restored from snapshot');
     
-    // Trigger AxonLoader connections now that restoration is complete
-    // All RETM components have been restored and are ready to handle events
-    console.log('🔌 Reconnecting AxonLoaders after restoration...');
-    
-    const discordElem = space.children.find(c => c.name === 'discord');
-    const controlElem = space.children.find(c => c.name === 'discord-control');
-    const elementControlElem = space.children.find(c => c.name === 'element-control');
-    
-    // Reconnect discord afferent
-    if (discordElem) {
-      console.log(`  📡 Found discord element with ${discordElem.components.length} components`);
-      // Find the Discord afferent component (loaded by maintainer, not by AxonLoader anymore)
-      const afferent = discordElem.components.find((c: any) => c.constructor.name === 'DiscordAfferent');
-      console.log(`  📡 Discord afferent found: ${!!afferent}, has join method: ${afferent && 'join' in afferent}`);
-      
-      if (afferent && this.config.discord.autoJoinChannels) {
-        console.log('  📡 Rejoining Discord channels after restoration...');
-        for (const channelId of this.config.discord.autoJoinChannels) {
-          console.log(`  📢 Rejoining channel: ${channelId}`);
-          if ('join' in afferent && typeof (afferent as any).join === 'function') {
-            try {
-              await (afferent as any).join({ channelId, scrollback: 50 });
-              console.log(`  ✅ Successfully rejoined ${channelId}`);
-            } catch (e) {
-              console.log(`  ⚠️  Failed to rejoin ${channelId}:`, e);
-            }
-          } else {
-            console.log(`  ⚠️  Afferent has no join method!`);
-          }
-        }
-      } else {
-        console.log(`  ⚠️  Cannot rejoin - afferent: ${!!afferent}, channels: ${!!this.config.discord.autoJoinChannels}`);
-      }
-    } else {
-      console.log(`  ⚠️  Discord element not found!`);
-    }
-    
-    // Reconnect control panels
-    if (controlElem) {
-      const axonLoader = controlElem.getComponents(AxonLoaderComponent)[0];
-      if (axonLoader && (axonLoader as any).connectNow) {
-        console.log('  📋 Reconnecting Discord control panel...');
-        await (axonLoader as any).connectNow();
-      }
-    }
-    
-    if (elementControlElem) {
-      const axonLoader = elementControlElem.getComponents(AxonLoaderComponent)[0];
-      if (axonLoader && (axonLoader as any).connectNow) {
-        console.log('  🎮 Reconnecting Element control panel...');
-        await (axonLoader as any).connectNow();
-      }
-    }
+    // All AXON modules are restored by ElementTreeMaintainer during Host.restore()
+    // Maintainer loads modules, registers classes, creates components, and calls setConnectionParams
+    // setConnectionParams triggers connection, and DiscordAfferent auto-joins configured channels
     
     console.log('✅ All connections re-established after restoration');
-    
-    // No need to register tools - agent discovers them from action-definition facets in VEIL!
   }
 }
