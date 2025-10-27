@@ -195,7 +195,7 @@ class CombinedDiscordAxonServer {
           },
           'leaveChannel': {
             description: 'Leave a channel',
-            parameters: { 
+            parameters: {
               channelName: { type: 'string', required: true },
               serverName: { type: 'string', required: false }
             }
@@ -203,6 +203,40 @@ class CombinedDiscordAxonServer {
           'showJoinedChannels': {
             description: 'Show all joined channels',
             parameters: {}
+          }
+        }
+      }
+    });
+    
+    // Register element-control module
+    await this.moduleServer.addModule('element-control', {
+      name: 'element-control',
+      path: join(modulesDir, 'element-control.ts'),
+      manifest: {
+        name: 'ElementControlComponent',
+        version: '1.0.0',
+        description: 'Element creation and management control panel',
+        componentClass: 'ElementControlComponent',
+        moduleType: 'function',
+        exports: {
+          receptors: ['ElementControlActionsReceptor']
+        },
+        actions: {
+          'createElement': {
+            description: 'Create a new element with custom configuration',
+            parameters: {
+              elementId: { type: 'string', required: true },
+              name: { type: 'string', required: true },
+              elementType: { type: 'string', required: false },
+              componentType: { type: 'string', required: false },
+              componentConfig: { type: 'object', required: false }
+            }
+          },
+          'createBox': {
+            description: 'Create a new box element with an agent',
+            parameters: {
+              boxName: { type: 'string', required: true }
+            }
           }
         }
       }

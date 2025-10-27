@@ -14,6 +14,7 @@ import { DiscordApplication } from './discord-app';
 import { AnthropicProvider } from 'connectome-ts/src/llm/anthropic-provider';
 import { MockLLMProvider } from 'connectome-ts/src/llm/mock-llm-provider';
 import { DebugLLMProvider } from 'connectome-ts/src/llm/debug-llm-provider';
+import { BoxTestMockProvider } from 'connectome-ts/src/llm/box-test-mock-provider';
 import { join } from 'path';
 import * as yaml from 'js-yaml';
 import * as fs from 'fs';
@@ -28,6 +29,7 @@ async function main() {
   const reset = args.includes('--reset');
   const debugPort = parseInt(args.find(a => a.startsWith('--debug-port='))?.split('=')[1] || '3000');
   const useDebugLLM = args.includes('--debug-llm');
+  const useBoxTest = args.includes('--box-test');
   
   if (reset) {
     console.log('🔄 Reset flag detected - starting fresh\n');
@@ -44,7 +46,10 @@ async function main() {
   let llmProvider;
   const apiKey = process.env.ANTHROPIC_API_KEY;
   
-  if (useDebugLLM) {
+  if (useBoxTest) {
+    console.log('🧪 Using Box Test Mock provider (simulates createBox action calls)');
+    llmProvider = new BoxTestMockProvider();
+  } else if (useDebugLLM) {
     console.log('🧪 Using Debug LLM provider (manual UI mode)');
     llmProvider = new DebugLLMProvider({ description: 'Discord Bot Debug Mode' });
   } else if (apiKey) {

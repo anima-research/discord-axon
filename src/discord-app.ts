@@ -170,34 +170,42 @@ class DiscordMessageReceptor extends BaseReceptor {
       // Check if this is a reply to the bot
       const replyingToBot = reply?.authorId === botUserId;
       
-      if (botMentioned || replyingToBot) {
-        const reason = botMentioned ? 'bot_mentioned' : 'bot_replied_to';
-        console.log(`[DiscordMessageReceptor] Creating agent activation (${reason})`);
-        deltas.push({
-          type: 'addFacet',
-          facet: {
-            id: `activation-${messageId}`,
-            type: 'agent-activation',
+      // Check for fallback activation pattern: "<activate AgentName>"
+      // This allows testing even without proper Discord mentions
+      const activatePattern = /<activate\s+([^>]+)>/i;
+      const activateMatch = rawContent?.match(activatePattern);
+      const fallbackActivate = activateMatch !== null && activateMatch !== undefined;
+      
+      if (botMentioned || replyingToBot || fallbackActivate) {
+        const reason = botMentioned ? 'bot_mentioned' : 
+                      replyingToBot ? 'bot_replied_to' : 
+                      'fallback_activate';
+        console.log(`[DiscordMessageReceptor] Creating agent activation (${reason}${fallbackActivate && activateMatch ? `: ${activateMatch[1]}` : ''})`);
+      deltas.push({
+        type: 'addFacet',
+        facet: {
+          id: `activation-${messageId}`,
+          type: 'agent-activation',
             // No content - activations are metadata, not renderable content
-            state: {
-              source: 'discord-message',
+          state: {
+            source: 'discord-message',
               reason,
-              priority: 'normal',
-              channelId,
-              messageId,
-              author,
-              streamRef: {
-                streamId,
-                streamType,
-                metadata: {
-                  channelId,
-                  channelName
-                }
+            priority: 'normal',
+            channelId,
+            messageId,
+            author,
+            streamRef: {
+              streamId,
+              streamType,
+              metadata: {
+                channelId,
+                channelName
               }
-            },
-            ephemeral: true
-          }
-        });
+            }
+            }
+            // Not ephemeral - this is valuable history of when/why agent activated
+        }
+      });
       } else {
         console.log(`[DiscordMessageReceptor] Skipping activation (bot not mentioned or replied to)`);
       }
@@ -505,19 +513,23 @@ class DiscordAutoJoinEffector extends BaseEffector {
   private channels: string[] = [];
   
   async onMount(): Promise<void> {
-    // Get discord element from config (injected via config.discordElementId)
+    // Config properties are set via Object.assign, read them directly
     const space = this.element?.findSpace();
-    const config = (this as any).config || {};
-    const discordElementId = config.discordElementId;
-    this.channels = config.channels || [];
+    const discordElementId = (this as any).discordElementId;
+    
+    // channels is already set by Object.assign, but log for debugging
+    console.log(`[DiscordAutoJoinEffector] onMount - properties:`, { discordElementId, channels: this.channels });
+    console.log(`[DiscordAutoJoinEffector] Space children:`, space?.children.map(c => `${c.name}(${c.id})`));
     
     if (discordElementId && space) {
       this.discordElement = space.children.find(c => c.id === discordElementId);
+      console.log(`[DiscordAutoJoinEffector] Found by ID '${discordElementId}':`, !!this.discordElement);
     }
     
     if (!this.discordElement) {
-      console.warn('[DiscordAutoJoinEffector] Discord element not found, will search by name');
+      console.warn('[DiscordAutoJoinEffector] Discord element not found by ID, searching by name');
       this.discordElement = space?.children.find(c => c.name === 'discord');
+      console.log(`[DiscordAutoJoinEffector] Found by name 'discord':`, !!this.discordElement);
     }
   }
   
@@ -834,11 +846,11 @@ export class DiscordApplication implements ConnectomeApplication {
     // During initialization, we create NEW elements declaratively
     // Build AXON URL for Discord afferent
     const botToken = (this.config as any).botToken || '';
-    const modulePort = this.config.discord.modulePort || 8080;
+        const modulePort = this.config.discord.modulePort || 8080;
     const discordAxonUrl = `axon://localhost:${modulePort}/modules/discord-afferent/manifest?` + 
-      `host=${encodeURIComponent(this.config.discord.host)}&` +
-      `path=${encodeURIComponent('/ws')}&` +
-      `guild=${encodeURIComponent(this.config.discord.guild)}&` +
+          `host=${encodeURIComponent(this.config.discord.host)}&` +
+          `path=${encodeURIComponent('/ws')}&` +
+          `guild=${encodeURIComponent(this.config.discord.guild)}&` +
       `agent=${encodeURIComponent(this.config.agentName)}&` +
       `token=${encodeURIComponent(botToken)}`;
     
@@ -880,11 +892,11 @@ export class DiscordApplication implements ConnectomeApplication {
     if (!agentElem) {
       console.log('🆕 Creating agent element via element:create event');
       
-      const agentConfig = {
-        name: this.config.agentName,
-        systemPrompt: this.config.systemPrompt,
-        autoActionRegistration: true
-      };
+        const agentConfig = {
+          name: this.config.agentName,
+          systemPrompt: this.config.systemPrompt,
+          autoActionRegistration: true
+        };
       
       space.emit({
         topic: 'element:create',
@@ -916,6 +928,44 @@ export class DiscordApplication implements ConnectomeApplication {
     // Subscribe to agent response events
     space.subscribe('agent:frame-ready');
     
+    // Create Box Dispenser element for testing dynamic element persistence
+    let boxElement = space.children.find((child) => child.name === 'box-dispenser');
+    
+    if (!boxElement) {
+      console.log('📦 Creating Box Dispenser element via element:create event');
+      
+      const boxAgentConfig = {
+        name: 'Box Dispenser',
+        systemPrompt: 'You are a helpful box dispenser. You dispense boxes. When asked, you cheerfully dispense a box and describe it.',
+      autoActionRegistration: true
+    };
+    
+      space.emit({
+        topic: 'element:create',
+        source: space.getRef(),
+        timestamp: Date.now(),
+        payload: {
+          parentId: 'root',
+          elementId: 'box-dispenser',  // ✨ Stable ID for testing
+          name: 'box-dispenser',
+          elementType: 'Element',
+          components: [
+            {
+              type: 'AgentComponent',
+              config: { agentConfig: boxAgentConfig }
+            }
+          ]
+        }
+      });
+      
+      // Wait for element to be created
+      await new Promise(resolve => setTimeout(resolve, 100));
+      
+      console.log('✅ Box Dispenser element created dynamically');
+    } else {
+      console.log('✅ Found existing Box Dispenser from persistence');
+    }
+    
     // Create Discord control panel declaratively (only if it doesn't exist)
     let controlElement = space.children.find((child) => child.name === 'discord-control');
     
@@ -945,6 +995,37 @@ export class DiscordApplication implements ConnectomeApplication {
       await new Promise(resolve => setTimeout(resolve, 100));
     } else {
       console.log('✅ Found existing Discord control panel from persistence');
+    }
+    
+    // Create Element control panel for agents to create elements/boxes
+    let elementControlElement = space.children.find((child) => child.name === 'element-control');
+    
+    if (!elementControlElement) {
+      console.log('🎮 Creating Element control panel via element:create event');
+      const elementControlUrl = 'axon://localhost:8080/modules/element-control/manifest';
+      
+      space.emit({
+        topic: 'element:create',
+        source: space.getRef(),
+        timestamp: Date.now(),
+        payload: {
+          parentId: 'root',
+          elementId: 'element-control',  // ✨ Stable ID
+          name: 'element-control',
+          elementType: 'Element',
+          components: [
+            {
+              type: 'AxonLoaderComponent',
+              config: { axonUrl: elementControlUrl }
+            }
+          ]
+        }
+      });
+      
+      // Wait for element to be created
+      await new Promise(resolve => setTimeout(resolve, 100));
+    } else {
+      console.log('✅ Found existing Element control panel from persistence');
     }
     
     console.log('✅ Discord application initialized');
@@ -984,8 +1065,8 @@ export class DiscordApplication implements ConnectomeApplication {
     // This creates element-tree facets that persist across restores
     console.log('➕ Creating Discord RETM components via VEIL');
     
-    const discordElem = space.children.find(c => c.name === 'discord');
-    const agentElem = space.children.find(child => child.name === 'discord-agent');
+    let discordElem = space.children.find(c => c.name === 'discord');
+    let agentElem = space.children.find(child => child.name === 'discord-agent');
     
     // Emit component:add events for Space-level components
     const spaceComponents = [
@@ -1072,47 +1153,103 @@ export class DiscordApplication implements ConnectomeApplication {
     await new Promise(resolve => setTimeout(resolve, 100));
     
     console.log('✅ Discord RETM components created via VEIL');
+    
+    // Now that all RETM components are registered, trigger AxonLoader connections
+    // This ensures receptors are ready to handle application events (like discord:connected)
+    console.log('🔌 Triggering AxonLoader connections now that RETM infrastructure is ready...');
+    
+    // Re-find elements (don't redeclare)
+    discordElem = space.children.find(c => c.name === 'discord');
+    const controlElem = space.children.find(c => c.name === 'discord-control');
+    const elementControlElem = space.children.find(c => c.name === 'element-control');
+    
+    // Connect discord afferent
+    if (discordElem) {
+      const axonLoader = discordElem.getComponents(AxonLoaderComponent)[0];
+      if (axonLoader && (axonLoader as any).connectNow) {
+        console.log('  📡 Connecting Discord afferent...');
+        await (axonLoader as any).connectNow();
+      }
+    }
+    
+    // Connect control panels
+    if (controlElem) {
+      const axonLoader = controlElem.getComponents(AxonLoaderComponent)[0];
+      if (axonLoader && (axonLoader as any).connectNow) {
+        console.log('  📋 Connecting Discord control panel...');
+        await (axonLoader as any).connectNow();
+      }
+    }
+    
+    if (elementControlElem) {
+      const axonLoader = elementControlElem.getComponents(AxonLoaderComponent)[0];
+      if (axonLoader && (axonLoader as any).connectNow) {
+        console.log('  🎮 Connecting Element control panel...');
+        await (axonLoader as any).connectNow();
+      }
+    }
+    
+    console.log('✅ All connections established');
+    
+    // No need to register tools - agent discovers them from action-definition facets in VEIL!
   }
   
   async onRestore(space: Space, veilState: VEILStateManager): Promise<void> {
     console.log('♻️ Discord application restored from snapshot');
     
-    // Reconnect Discord afferent
+    // Trigger AxonLoader connections now that restoration is complete
+    // All RETM components have been restored and are ready to handle events
+    console.log('🔌 Reconnecting AxonLoaders after restoration...');
+    
     const discordElem = space.children.find(c => c.name === 'discord');
+    const controlElem = space.children.find(c => c.name === 'discord-control');
+    const elementControlElem = space.children.find(c => c.name === 'element-control');
+    
+    // Reconnect discord afferent
     if (discordElem) {
       const axonLoader = discordElem.getComponents(AxonLoaderComponent)[0];
-      
-      if (axonLoader && (axonLoader as any).axonUrl) {
-        console.log('🔄 Reconnecting Discord afferent after restoration...');
-        try {
-          // Reload the component
-          await axonLoader.connect((axonLoader as any).axonUrl);
-          
-          // Get the loaded afferent and start it
+      if (axonLoader && (axonLoader as any).connectNow) {
+        console.log('  📡 Reconnecting Discord afferent...');
+        await (axonLoader as any).connectNow();
+        
+        // After reconnection, rejoin channels
+        // discord:connected event won't fire again (it's in history)
+        // so we need to manually rejoin
           const afferent = (axonLoader as any).loadedComponent;
-          if (afferent && typeof afferent.start === 'function') {
-            console.log('▶️ Starting Discord afferent...');
-            await afferent.start();
-            
-            // Wait for connection and authentication
-            await new Promise(resolve => setTimeout(resolve, 2000));
-            
-            // Rejoin channels after reconnection
-            if (this.config.discord.autoJoinChannels) {
+        if (afferent && this.config.discord.autoJoinChannels) {
               for (const channelId of this.config.discord.autoJoinChannels) {
-                console.log(`📢 Rejoining channel: ${channelId}`);
+            console.log(`  📢 Rejoining channel: ${channelId}`);
                 if (afferent.join && typeof afferent.join === 'function') {
+              try {
                   await afferent.join({ channelId, scrollback: 50 });
-                }
+              } catch (e) {
+                console.log(`  ⚠️  Failed to rejoin ${channelId}:`, e);
               }
             }
           }
-        } catch (e) {
-          console.log('⚠️ Failed to reconnect Discord afferent:', e);
         }
       }
     }
     
-    // No activation needed - Discord messages will trigger the agent
+    // Reconnect control panels
+    if (controlElem) {
+      const axonLoader = controlElem.getComponents(AxonLoaderComponent)[0];
+      if (axonLoader && (axonLoader as any).connectNow) {
+        console.log('  📋 Reconnecting Discord control panel...');
+        await (axonLoader as any).connectNow();
+      }
+    }
+    
+    if (elementControlElem) {
+      const axonLoader = elementControlElem.getComponents(AxonLoaderComponent)[0];
+      if (axonLoader && (axonLoader as any).connectNow) {
+        console.log('  🎮 Reconnecting Element control panel...');
+        await (axonLoader as any).connectNow();
+      }
+    }
+    
+    console.log('✅ All connections re-established after restoration');
+    
+    // No need to register tools - agent discovers them from action-definition facets in VEIL!
   }
 }
