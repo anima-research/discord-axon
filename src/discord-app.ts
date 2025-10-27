@@ -1207,28 +1207,31 @@ export class DiscordApplication implements ConnectomeApplication {
     
     // Reconnect discord afferent
     if (discordElem) {
-      const axonLoader = discordElem.getComponents(AxonLoaderComponent)[0];
-      if (axonLoader && (axonLoader as any).connectNow) {
-        console.log('  📡 Reconnecting Discord afferent...');
-        await (axonLoader as any).connectNow();
-        
-        // After reconnection, rejoin channels
-        // discord:connected event won't fire again (it's in history)
-        // so we need to manually rejoin
-          const afferent = (axonLoader as any).loadedComponent;
-        if (afferent && this.config.discord.autoJoinChannels) {
-              for (const channelId of this.config.discord.autoJoinChannels) {
-            console.log(`  📢 Rejoining channel: ${channelId}`);
-                if (afferent.join && typeof afferent.join === 'function') {
-              try {
-                  await afferent.join({ channelId, scrollback: 50 });
-              } catch (e) {
-                console.log(`  ⚠️  Failed to rejoin ${channelId}:`, e);
-              }
+      console.log(`  📡 Found discord element with ${discordElem.components.length} components`);
+      // Find the Discord afferent component (loaded by maintainer, not by AxonLoader anymore)
+      const afferent = discordElem.components.find((c: any) => c.constructor.name === 'DiscordAfferent');
+      console.log(`  📡 Discord afferent found: ${!!afferent}, has join method: ${afferent && 'join' in afferent}`);
+      
+      if (afferent && this.config.discord.autoJoinChannels) {
+        console.log('  📡 Rejoining Discord channels after restoration...');
+        for (const channelId of this.config.discord.autoJoinChannels) {
+          console.log(`  📢 Rejoining channel: ${channelId}`);
+          if ('join' in afferent && typeof (afferent as any).join === 'function') {
+            try {
+              await (afferent as any).join({ channelId, scrollback: 50 });
+              console.log(`  ✅ Successfully rejoined ${channelId}`);
+            } catch (e) {
+              console.log(`  ⚠️  Failed to rejoin ${channelId}:`, e);
             }
+          } else {
+            console.log(`  ⚠️  Afferent has no join method!`);
           }
         }
+      } else {
+        console.log(`  ⚠️  Cannot rejoin - afferent: ${!!afferent}, channels: ${!!this.config.discord.autoJoinChannels}`);
       }
+    } else {
+      console.log(`  ⚠️  Discord element not found!`);
     }
     
     // Reconnect control panels

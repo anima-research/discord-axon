@@ -721,9 +721,11 @@ export function createModule(env: IAxonEnvironmentV2): any {
       };
     }
   }
-
-  // Return in RETM module format for AxonLoader
-  return {
+  
+  // Must return AFTER the class definition (decorators mess with the scope)
+  const result = {
     afferents: { DiscordAfferent }
   };
+  
+  return result;
 }
