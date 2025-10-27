@@ -722,5 +722,8 @@ export function createModule(env: IAxonEnvironmentV2): any {
     }
   }
 
-  return DiscordAfferent;
+  // Return in RETM module format for AxonLoader
+  return {
+    afferents: { DiscordAfferent }
+  };
 }
