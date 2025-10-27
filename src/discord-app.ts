@@ -258,7 +258,14 @@ class DiscordHistorySyncReceptor extends BaseReceptor {
     
     for (const veilMsg of veilMessages) {
       const messageId = (veilMsg as any).attributes.messageId;
-      const veilContent = (veilMsg as any).content;
+      
+      // Extract content from nested speech facet (discord-message facets don't have content directly)
+      const speechFacetId = `speech-${messageId}`;
+      const speechFacet = state.facets.get(speechFacetId);
+      const veilContent = speechFacet?.content || '';
+      
+      console.log(`[DiscordHistorySync] Message ${messageId} - speechFacet exists: ${!!speechFacet}, content: "${veilContent}"`);
+      
       const discordMsg = discordMessages.get(messageId) as any;
       
       if (!discordMsg) {
@@ -302,12 +309,22 @@ class DiscordHistorySyncReceptor extends BaseReceptor {
         console.log(`  Discord: "${discordMsg.content}"`);
         editedCount++;
         
-        // Rewrite the message facet (exotemporal - updating to current reality)
+        // Update the speech facet with new content
+        if (speechFacet) {
+          deltas.push({
+            type: 'rewriteFacet',
+            id: speechFacet.id,
+            changes: {
+              content: `${discordMsg.author}: ${discordMsg.content}` // Parsed content
+            }
+          });
+        }
+        
+        // Update the message facet metadata (but not content - that's in speech)
         deltas.push({
           type: 'rewriteFacet',
           id: veilMsg.id,
           changes: {
-            content: `${discordMsg.author}: ${discordMsg.content}`, // Parsed content
             state: {
               source: 'discord',
               eventType: 'discord-message',
@@ -385,15 +402,26 @@ class DiscordMessageUpdateReceptor extends BaseReceptor {
     
     const deltas: any[] = [];
     const facetId = `discord-msg-${messageId}`;
+    const speechFacetId = `speech-${messageId}`;
     
     // Check if the message facet exists
     if (state.facets.has(facetId)) {
-      // Rewrite the message facet with new content (exotemporal - updating to reality)
+      // Update the speech facet with new content
+      if (state.facets.has(speechFacetId)) {
+        deltas.push({
+          type: 'rewriteFacet',
+          id: speechFacetId,
+          changes: {
+            content: `${author}: ${content}` // Use parsed content
+          }
+        });
+      }
+      
+      // Update the message facet metadata (but not content - that's in speech)
       deltas.push({
         type: 'rewriteFacet',
         id: facetId,
         changes: {
-          content: `${author}: ${content}`, // Use parsed content
           state: {
             source: 'discord',
             eventType: 'discord-message',
