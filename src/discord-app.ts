@@ -571,6 +571,7 @@ class DiscordInfrastructureTransform extends BaseTransform {
     'DiscordMessageUpdateReceptor',
     'DiscordMessageDeleteReceptor',
     'DiscordSpeechEffector',
+    'DiscordTypingEffector',
     'AgentEffector',
     'ContextTransform'
   ]);
@@ -744,11 +745,95 @@ class DiscordAutoJoinEffector extends BaseEffector {
 }
 
 /**
+ * Effector: Sends typing indicators when agent activates
+ */
+class DiscordTypingEffector extends BaseEffector {
+  facetFilters = [{ type: 'agent-activation' }];
+
+  private discordElement?: Element;
+
+  async onMount(): Promise<void> {
+    // Get discord element from Space (injected via config.discordElementId)
+    const space = this.element?.findSpace();
+    const config = (this as any).config || {};
+    const discordElementId = config.discordElementId;
+
+    if (discordElementId && space) {
+      this.discordElement = space.children.find(c => c.id === discordElementId);
+    }
+
+    if (!this.discordElement) {
+      console.warn('[DiscordTypingEffector] Discord element not found, will search by name');
+      this.discordElement = space?.children.find(c => c.name === 'discord');
+    }
+  }
+
+  async process(changes: FacetDelta[], state: ReadonlyVEILState): Promise<EffectorResult> {
+    const events: SpaceEvent[] = [];
+
+    // Lazy lookup: Try to find Discord element if we don't have it yet
+    if (!this.discordElement) {
+      const space = this.element?.findSpace();
+      const config = (this as any).config || {};
+      const discordElementId = config.discordElementId;
+
+      if (discordElementId && space) {
+        this.discordElement = space.children.find(c => c.id === discordElementId);
+      }
+
+      if (!this.discordElement && space) {
+        this.discordElement = space.children.find(c => c.name === 'discord');
+      }
+
+      if (this.discordElement) {
+        console.log('[DiscordTypingEffector] Found Discord element on lazy lookup');
+      }
+    }
+
+    for (const change of changes) {
+      // Send typing when agent activates
+      if (change.type !== 'added' || change.facet.type !== 'agent-activation') continue;
+
+      const activation = change.facet as any;
+      const channelId = activation.state?.channelId || activation.state?.metadata?.channelId;
+
+      if (!channelId) {
+        console.log('[DiscordTypingEffector] Skipping activation without channelId');
+        continue;
+      }
+
+      console.log(`[DiscordTypingEffector] Sending typing indicator to channel: ${channelId}`);
+
+      // Call sendTyping on the Discord afferent
+      if (!this.discordElement) {
+        console.error('[DiscordTypingEffector] Discord element not available');
+        continue;
+      }
+
+      const components = this.discordElement.components as any[];
+      for (const comp of components) {
+        if (comp.sendTyping && typeof comp.sendTyping === 'function') {
+          try {
+            await comp.sendTyping({ channelId });
+            console.log(`[DiscordTypingEffector] Successfully sent typing indicator`);
+          } catch (error) {
+            console.error(`Failed to send typing indicator:`, error);
+          }
+          break;
+        }
+      }
+    }
+
+    return { events };
+  }
+}
+
+/**
  * Effector: Sends agent speech to Discord
  */
 class DiscordSpeechEffector extends BaseEffector {
   facetFilters = [{ type: 'speech' }];
-  
+
   private discordElement?: Element;
   
   async onMount(): Promise<void> {
@@ -1097,6 +1182,19 @@ export class DiscordApplication implements ConnectomeApplication {
       }
     });
 
+    // Add DiscordTypingEffector (sends typing indicators on agent activation)
+    space.emit({
+      topic: 'component:add',
+      source: space.getRef(),
+      timestamp: Date.now(),
+      payload: {
+        elementId: 'root',
+        componentType: 'DiscordTypingEffector',
+        componentClass: 'effector',
+        config: { discordElementId: 'discord' }
+      }
+    });
+
     // Add DiscordAutoJoinEffector if configured
     if (this.config.discord.autoJoinChannels && this.config.discord.autoJoinChannels.length > 0) {
       space.emit({
@@ -1318,6 +1416,7 @@ export class DiscordApplication implements ConnectomeApplication {
     registry.register('DiscordMessageUpdateReceptor', DiscordMessageUpdateReceptor);
     registry.register('DiscordMessageDeleteReceptor', DiscordMessageDeleteReceptor);
     registry.register('DiscordSpeechEffector', DiscordSpeechEffector);
+    registry.register('DiscordTypingEffector', DiscordTypingEffector);
     registry.register('AgentEffector', AgentEffector);
     registry.register('ContextTransform', ContextTransform);
     registry.register('DiscordAutoJoinEffector', DiscordAutoJoinEffector);
