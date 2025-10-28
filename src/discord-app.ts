@@ -281,12 +281,10 @@ class DiscordHistorySyncReceptor extends BaseReceptor {
     for (const veilMsg of veilMessages) {
       const messageId = (veilMsg as any).attributes.messageId;
       
-      // Extract content from nested speech facet (discord-message facets don't have content directly)
-      const speechFacetId = `speech-${messageId}`;
-      const speechFacet = state.facets.get(speechFacetId);
+      // Extract content from nested speech facet (navigate children, not flat lookup)
+      // Discord messages have speech as their first child
+      const speechFacet = (veilMsg as any).children?.[0];
       const veilContent = speechFacet?.content || '';
-      
-      console.log(`[DiscordHistorySync] Message ${messageId} - speechFacet exists: ${!!speechFacet}, content: "${veilContent}"`);
       
       const discordMsg = discordMessages.get(messageId) as any;
       
