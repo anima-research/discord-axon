@@ -123,47 +123,6 @@ class CombinedDiscordAxonServer {
       }
     });
     
-    // Map module names to their actual file names
-    await this.moduleServer.addModule('discord', {
-      name: 'discord',
-      path: join(modulesDir, 'discord-axon-refactored.ts'),
-      manifest: {
-        name: 'discord-axon-refactored',
-        version: '1.0.0',
-        description: 'Discord integration using RETM pattern',
-        componentClass: 'DiscordAxonComponent',
-        moduleType: 'function',
-        config: {
-          serverUrl: { type: 'string', description: 'WebSocket server URL' },
-          guildId: { type: 'string', description: 'Discord guild ID' },
-          agentName: { type: 'string', description: 'Agent name for multi-agent support' },
-          botToken: { type: 'string', secret: true, external: 'secret:discord.token', description: 'Discord bot token' }
-        }
-      }
-    });
-    
-    await this.moduleServer.addModule('discord-chat', {
-      name: 'discord-chat',
-      path: join(modulesDir, 'discord-chat-refactored.ts'),
-      manifest: {
-        name: 'DiscordChatComponent',
-        version: '1.0.0',
-        description: 'Discord chat integration with agent activation',
-        componentClass: 'DiscordChatComponent',
-        moduleType: 'function',
-        extends: 'DiscordAxonComponent',
-        dependencies: [
-          { name: 'DiscordAxonComponent', manifest: '/modules/discord/manifest' }
-        ],
-        actions: {
-          'setTriggerConfig': {
-            description: 'Configure chat triggers',
-            parameters: { config: { type: 'object', required: true }             }
-          }
-        }
-      }
-    });
-    
     await this.moduleServer.addModule('discord-control-panel', {
       name: 'discord-control-panel',
       path: join(modulesDir, 'discord-control-panel.ts'),
