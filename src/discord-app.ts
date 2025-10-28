@@ -81,7 +81,8 @@ class DiscordMessageReceptor extends BaseReceptor {
   
   transform(event: SpaceEvent, state: ReadonlyVEILState): any[] {
     const payload = event.payload as any;
-    const { channelId, channelName, author, authorId, content, rawContent, mentions, reply, messageId, streamId, streamType, isHistory, isBot } = payload;
+    const { channelId, channelName, author, authorId, content, rawContent, mentions, reply, messageId, streamId, streamType, isBot } = payload;
+    // Note: isHistory removed - history messages come through discord:history-sync, not discord:message
     
     // Check if we've already processed this message (de-dup against VEIL)
     const lastReadFacet = state.facets.get(`discord-lastread-${channelId}`);
@@ -92,7 +93,7 @@ class DiscordMessageReceptor extends BaseReceptor {
       return []; // Skip old message
     }
     
-    console.log(`[DiscordMessageReceptor] Processing message from ${author}: "${content}"${isHistory ? ' (history)' : ''}${reply ? ' (reply)' : ''}`);
+    console.log(`[DiscordMessageReceptor] Processing message from ${author}: "${content}"${reply ? ' (reply)' : ''}`);
     
     const deltas: any[] = [];
 
@@ -157,7 +158,6 @@ class DiscordMessageReceptor extends BaseReceptor {
             author,
             authorId,
             isBot,
-            isHistory,
             rawContent, // Original content with Discord IDs
             mentions, // Structured mention metadata
             reply // Reply information if this is a reply
@@ -182,9 +182,9 @@ class DiscordMessageReceptor extends BaseReceptor {
       state
     ));
     
-    // Only activate agent for live messages (not history)
-    // AND only if the bot is mentioned or replied to
-    if (!isHistory && botUserId) {
+    // Activate agent if the bot is mentioned or replied to
+    // (History messages don't come through this receptor anymore)
+    if (botUserId) {
       // Check if bot is mentioned
       const botMentioned = mentions?.users?.some((u: any) => u.id === botUserId);
       
@@ -252,7 +252,7 @@ class DiscordHistorySyncReceptor extends BaseReceptor {
   topics = ['discord:history-sync'];
   
   transform(event: SpaceEvent, state: ReadonlyVEILState): any[] {
-    const { channelId, messages } = event.payload as any;
+    const { channelId, channelName, messages } = event.payload as any;
     const deltas: any[] = [];
     
     console.log(`[DiscordHistorySync] Syncing ${messages.length} messages for channel ${channelId}`);
@@ -261,22 +261,17 @@ class DiscordHistorySyncReceptor extends BaseReceptor {
     const discordMessages = new Map(messages.map((m: any) => [m.messageId, m]));
     
     // Find all Discord message facets for this channel in VEIL
-    console.log(`[DiscordHistorySync] Total facets in VEIL: ${state.facets.size}`);
-    const eventFacets = Array.from(state.facets.values()).filter(f => f.type === 'event');
-    console.log(`[DiscordHistorySync] Event facets: ${eventFacets.length}`);
-    const eventTypes = new Set(eventFacets.map(f => (f as any).state?.eventType).filter(Boolean));
-    console.log(`[DiscordHistorySync] Event types found: ${Array.from(eventTypes).join(', ')}`);
-    
     const veilMessages = Array.from(state.facets.values()).filter(
       f => f.type === 'event' && 
-           (f as any).state?.eventType === 'discord-message' &&  // eventType is in state!
+           (f as any).state?.eventType === 'discord-message' &&
            (f as any).attributes?.channelId === channelId
     );
     
     let deletedCount = 0;
     let editedCount = 0;
+    const newMessages: any[] = [];
     
-    console.log(`[DiscordHistorySync] Found ${veilMessages.length} discord-message facets for this channel`);
+    console.log(`[DiscordHistorySync] Found ${veilMessages.length} existing messages in VEIL, ${messages.length} in history`);
     
     for (const veilMsg of veilMessages) {
       const messageId = (veilMsg as any).attributes.messageId;
@@ -393,8 +388,79 @@ class DiscordHistorySyncReceptor extends BaseReceptor {
       }
     }
     
-    if (deletedCount > 0 || editedCount > 0) {
-      console.log(`[DiscordHistorySync] Detected ${editedCount} edits, ${deletedCount} deletions while offline`);
+    // Find messages in Discord history that aren't in VEIL yet (new messages)
+    const veilMessageIds = new Set(veilMessages.map(v => (v as any).attributes.messageId));
+    for (const msg of messages) {
+      if (!veilMessageIds.has(msg.messageId)) {
+        newMessages.push(msg);
+      }
+    }
+    
+    console.log(`[DiscordHistorySync] ${editedCount} edits, ${deletedCount} deletions, ${newMessages.length} new messages`);
+    
+    // Create a single parent facet for new history messages (if any)
+    if (newMessages.length > 0) {
+      const children: any[] = [];
+      
+      for (const msg of newMessages) {
+        // Create nested message facet with speech child
+        const speechFacet = {
+          id: `speech-${msg.messageId}`,
+          type: 'speech',
+          content: msg.content,  // Just content, HUD will add speaker prefix
+          state: {
+            speakerId: `discord:${msg.authorId}`,
+            speaker: msg.author
+          }
+        };
+        
+        children.push({
+          id: `discord-msg-${msg.messageId}`,
+          type: 'event',
+          state: {
+            source: 'discord',
+            eventType: 'discord-message',
+            metadata: {
+              channelName,
+              author: msg.author,
+              authorId: msg.authorId,
+              isBot: msg.isBot,
+              rawContent: msg.rawContent,
+              mentions: msg.mentions
+            }
+          },
+          attributes: {
+            channelId,
+            messageId: msg.messageId,
+            mentions: msg.mentions
+          },
+          children: [speechFacet]
+        });
+      }
+      
+      // Create parent history facet with all new messages as children
+      deltas.push({
+        type: 'addFacet',
+        facet: {
+          id: `discord-history-${channelId}-${Date.now()}`,
+          type: 'event',
+          displayName: 'discord-history',  // HUD can use this for wrapping
+          state: {
+            source: 'discord',
+            eventType: 'discord-history-dump',
+            metadata: {
+              channelId,
+              channelName,
+              messageCount: newMessages.length
+            }
+          },
+          attributes: {
+            channelId,
+            messageCount: newMessages.length
+          },
+          children  // All messages nested inside
+        }
+      });
     }
     
     return deltas;

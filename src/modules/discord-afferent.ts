@@ -477,49 +477,13 @@ export function createModule(env: IAxonEnvironmentV2): any {
         }
       });
       
-      // Filter out already-seen messages (using cache)
-      const lastReadId = this.lastReadCache[channelId];
-      let newMessages = messages;
+      // Don't emit individual message events for history
+      // The discord:history-sync event contains all messages
+      // A receptor will create a single parent facet with nested children
+      // This preserves the batch nature and avoids polluting the event stream
       
-      if (lastReadId) {
-        const lastReadBigInt = BigInt(lastReadId);
-        newMessages = messages.filter((m: any) => {
-          try {
-            return BigInt(m.messageId) > lastReadBigInt;
-          } catch (e) {
-            return false;
-          }
-        });
-        
-        console.log(`[DiscordAfferent] Filtered ${messages.length - newMessages.length} already-read messages`);
-      }
-      
-      // Emit each new message as an event
-      const streamId = this.buildStreamId(channelName, guildName);
-      
-      for (const message of newMessages) {
-        this.emit({
-          topic: 'discord:message',
-          source: { elementId: this.element?.id || 'discord', elementPath: [] },
-          timestamp: Date.now(),
-          payload: {
-            channelId: message.channelId,
-            messageId: message.messageId,
-            author: message.author,
-            authorId: message.authorId,
-            isBot: message.isBot,
-            content: message.content,
-            rawContent: message.rawContent,
-            mentions: message.mentions,
-            timestamp: message.timestamp,
-            channelName,
-            guildName,
-            streamId,
-            streamType: 'discord',
-            isHistory: true
-          }
-        });
-        
+      // Just update cache and lastRead
+      for (const message of messages) {
         this.processedMessagesCache.add(message.messageId);
       }
       
@@ -537,7 +501,7 @@ export function createModule(env: IAxonEnvironmentV2): any {
         payload: {
           channelId,
           channelName,
-          messageCount: newMessages.length
+          messageCount: messages.length
         }
       });
     }
