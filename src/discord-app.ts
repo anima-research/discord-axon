@@ -36,7 +36,7 @@ export interface DiscordAppConfig {
  */
 class DiscordConnectedReceptor extends BaseReceptor {
   topics = ['discord:connected'];
-
+  
   transform(event: SpaceEvent, state: ReadonlyVEILState): any[] {
     console.log('[DiscordConnectedReceptor] Processing discord:connected event');
     const payload = event.payload as any;
@@ -93,7 +93,7 @@ class DiscordMessageReceptor extends BaseReceptor {
     }
     
     console.log(`[DiscordMessageReceptor] Processing message from ${author}: "${content}"${isHistory ? ' (history)' : ''}${reply ? ' (reply)' : ''}`);
-
+    
     const deltas: any[] = [];
 
     // Retrieve bot user ID from VEIL state (set by DiscordConnectedReceptor)
@@ -699,17 +699,17 @@ class DiscordAutoJoinEffector extends BaseEffector {
     if (!this.discordElement || !this.channels || this.channels.length === 0) {
       return { events };
     }
-
+    
     // Check if we have a discord:connected facet
     const hasConnected = changes.some(
-      c => c.type === 'added' && c.facet.type === 'event' &&
+      c => c.type === 'added' && c.facet.type === 'event' && 
       (c.facet as any).state?.eventType === 'discord-connected'
     );
-
+    
     if (!hasConnected) {
       return { events };
     }
-
+    
     console.log('🤖 Discord connected! Auto-joining channels:', this.channels);
     
     // Call join on the Discord afferent
@@ -821,7 +821,7 @@ class DiscordTypingEffector extends BaseEffector {
         }
       }
     }
-
+    
     return { events };
   }
 }
@@ -831,7 +831,7 @@ class DiscordTypingEffector extends BaseEffector {
  */
 class DiscordSpeechEffector extends BaseEffector {
   facetFilters = [{ type: 'speech' }];
-
+  
   private discordElement?: Element;
   
   async onMount(): Promise<void> {
@@ -871,19 +871,19 @@ class DiscordSpeechEffector extends BaseEffector {
         console.log('[DiscordSpeechEffector] Found Discord element on lazy lookup');
       }
     }
-
+    
     for (const change of changes) {
       if (change.type !== 'added' || change.facet.type !== 'speech') continue;
-
+      
       const speech = change.facet as any;
       const streamId = speech.streamId;
       let content = speech.content;
-
+      
       // Check if this is for Discord
       if (!streamId || !streamId.startsWith('discord:')) continue;
-
+      
       console.log(`[DiscordSpeechEffector] Processing speech for stream: ${streamId}`);
-
+      
       // Check for reply syntax: <reply:@username> message
       const replyMatch = content.match(/^<reply:@([^>]+)>\s*/);
       let replyToUsername = null;
@@ -902,15 +902,15 @@ class DiscordSpeechEffector extends BaseEffector {
       const discordMessages = Array.from(state.facets.values()).filter(
         f => f.type === 'event' && f.state.eventType === 'discord-message'
       );
-
+      
       if (discordMessages.length === 0) {
         console.warn('[DiscordSpeechEffector] No discord-message facets found');
         continue;
       }
-
+      
       const latestMessage = discordMessages[discordMessages.length - 1] as any;
       const channelId = latestMessage.attributes?.channelId;
-
+      
       if (!channelId) {
         console.warn('[DiscordSpeechEffector] No channelId in message facet');
         continue;
@@ -922,9 +922,9 @@ class DiscordSpeechEffector extends BaseEffector {
         sendParams.replyTo = replyToMessageId;
         console.log(`[DiscordSpeechEffector] Sending as reply to message ${replyToMessageId}`);
       }
-
+      
       console.log(`[DiscordSpeechEffector] Sending to channel ${channelId}: "${content}"`);
-
+      
       // Call send on the Discord afferent
       if (!this.discordElement) {
         console.error('[DiscordSpeechEffector] Discord element not available (even after lazy lookup)');
@@ -1105,7 +1105,7 @@ export class DiscordApplication implements ConnectomeApplication {
   
   async initialize(space: Space, veilState: VEILStateManager): Promise<void> {
     console.log('🎮 Initializing Discord application (fresh start)...');
-
+    
     // Register all components FIRST (needed for component:add events)
     this.getComponentRegistry();
 
@@ -1113,7 +1113,7 @@ export class DiscordApplication implements ConnectomeApplication {
     // So we can immediately use element:create and component:add events
 
     const botToken = (this.config as any).botToken || '';
-    const modulePort = this.config.discord.modulePort || 8080;
+        const modulePort = this.config.discord.modulePort || 8080;
 
     // Build Discord configuration
     const discordConfig = {
@@ -1396,7 +1396,7 @@ export class DiscordApplication implements ConnectomeApplication {
   
   getComponentRegistry(): typeof ComponentRegistry {
     const registry = ComponentRegistry;
-
+    
     // Register all components that can be restored
     // AxonLoaderComponent removed - AXON components are loaded on-demand by maintainer
     registry.register('AgentComponent', AgentComponent);
@@ -1418,13 +1418,13 @@ export class DiscordApplication implements ConnectomeApplication {
     registry.register('AgentEffector', AgentEffector);
     registry.register('ContextTransform', ContextTransform);
     registry.register('DiscordAutoJoinEffector', DiscordAutoJoinEffector);
-
+    
     return registry;
   }
   
   async onStart(space: Space, veilState: VEILStateManager): Promise<void> {
     console.log('🚀 Discord application started!');
-
+    
     // All RETM infrastructure components are now added during initialize()
     // The DiscordInfrastructureTransform will create the Discord element when ready
     // All AXON modules are loaded by ElementTreeMaintainer during component creation
