@@ -12,11 +12,11 @@ import { persistable, persistent } from 'connectome-ts/src/persistence/decorator
 import { Element } from 'connectome-ts/src/spaces/element';
 import { Component } from 'connectome-ts/src/spaces/component';
 import { SpaceEvent } from 'connectome-ts/src/spaces/types';
-import { BaseReceptor, BaseEffector } from 'connectome-ts/src/components/base-martem';
+import { BaseReceptor, BaseEffector, BaseTransform } from 'connectome-ts/src/components/base-martem';
 import { AgentEffector } from 'connectome-ts/src/agent/agent-effector';
 import { ContextTransform } from 'connectome-ts/src/hud/context-transform';
 import { ElementRequestReceptor, ElementTreeMaintainer, ElementTreeTransform } from 'connectome-ts/src/spaces/element-tree-receptors';
-import type { Facet, ReadonlyVEILState, FacetDelta, EffectorResult, AgentInterface } from 'connectome-ts/src';
+import type { Facet, ReadonlyVEILState, FacetDelta, EffectorResult, AgentInterface, VEILDelta } from 'connectome-ts/src';
 import { updateStateFacets } from 'connectome-ts/src/helpers/factories';
 
 export interface DiscordAppConfig {
@@ -553,6 +553,98 @@ class DiscordMessageDeleteReceptor extends BaseReceptor {
 }
 
 /**
+ * Transform: Watches for infrastructure components and triggers Discord element creation
+ * when all required components are ready. This ensures receptors exist before the
+ * Discord afferent connects and emits discord:connected events.
+ */
+class DiscordInfrastructureTransform extends BaseTransform {
+  priority = 100; // Run early in transform phase
+
+  // Discord configuration (injected via component config)
+  private discordConfig?: any;
+
+  // Track which components we're waiting for
+  private requiredComponents = new Set([
+    'DiscordConnectedReceptor',
+    'DiscordMessageReceptor',
+    'DiscordHistorySyncReceptor',
+    'DiscordMessageUpdateReceptor',
+    'DiscordMessageDeleteReceptor',
+    'DiscordSpeechEffector',
+    'AgentEffector',
+    'ContextTransform'
+  ]);
+
+  // Track if we've already triggered initialization
+  private hasTriggered = false;
+
+  process(state: ReadonlyVEILState): VEILDelta[] {
+    if (this.hasTriggered) return [];
+
+    // Wait for config to be injected
+    if (!this.discordConfig) {
+      console.log('[DiscordInfrastructure] Waiting for config...');
+      return [];
+    }
+
+    // Check element-tree facets for root components
+    const rootTreeFacet = state.facets.get('element-tree-root');
+    if (!rootTreeFacet) return [];
+
+    const components = rootTreeFacet.state?.components || [];
+    const mountedTypes = new Set(components.map((c: any) => c.type));
+
+    // Check if all required components are present
+    const allReady = [...this.requiredComponents].every(type => mountedTypes.has(type));
+
+    if (!allReady) return [];
+
+    // Check if Discord element already exists (idempotent)
+    const discordTreeFacet = state.facets.get('element-tree-discord');
+    if (discordTreeFacet) {
+      console.log('[DiscordInfrastructure] Discord element already exists, skipping creation');
+      this.hasTriggered = true;
+      return [];
+    }
+
+    console.log('[DiscordInfrastructure] All components ready - creating Discord element');
+    this.hasTriggered = true;
+
+    // Directly create element-tree facet for Discord afferent
+    // This is the declarative way - the facet IS the declaration
+    return [{
+      type: 'addFacet',
+      facet: {
+        id: 'element-tree-discord',
+        type: 'element-tree',
+        state: {
+          elementId: 'discord',
+          elementType: 'Element',
+          parentId: 'root',
+          name: 'discord',
+          active: true,
+          components: [{
+            type: 'DiscordAfferent',
+            config: {
+              host: this.discordConfig.host,
+              path: this.discordConfig.path,
+              guild: this.discordConfig.guild,
+              agent: this.discordConfig.agent,
+              token: this.discordConfig.token,
+              autoJoinChannels: this.discordConfig.autoJoinChannels || [],
+              _axonMetadata: {
+                moduleUrl: this.discordConfig.moduleUrl,
+                manifestUrl: this.discordConfig.manifestUrl
+              }
+            }
+          }]
+        }
+      }
+    }];
+  }
+}
+
+/**
  * Effector: Auto-joins Discord channels when connected
  * Config-based for VEIL persistence
  */
@@ -893,59 +985,128 @@ export class DiscordApplication implements ConnectomeApplication {
   
   async initialize(space: Space, veilState: VEILStateManager): Promise<void> {
     console.log('🎮 Initializing Discord application (fresh start)...');
-    
+
     // Register all components FIRST (needed for component:add events)
     this.getComponentRegistry();
-    
+
     // Element Tree infrastructure is now initialized by Host before initialize() is called
     // So we can immediately use element:create and component:add events
-    
-    // During initialization, we create NEW elements declaratively
-    // Build AXON URL for Discord afferent
+
     const botToken = (this.config as any).botToken || '';
-        const modulePort = this.config.discord.modulePort || 8080;
-    // Create Discord element declaratively via VEIL (only if it doesn't exist)
-    let discordElem = space.children.find((child) => child.name === 'discord');
-    
-    if (!discordElem) {
-      console.log('🆕 Creating Discord element via element:create event');
+    const modulePort = this.config.discord.modulePort || 8080;
+
+    // Build Discord configuration
+    const discordConfig = {
+      host: this.config.discord.host,
+      path: '/ws',
+      guild: this.config.discord.guild,
+      agent: this.config.agentName,
+      token: botToken,
+      autoJoinChannels: this.config.discord.autoJoinChannels || [],
+      moduleUrl: `http://localhost:${modulePort}/modules/discord-afferent/module`,
+      manifestUrl: `http://localhost:${modulePort}/modules/discord-afferent/manifest`
+    };
+
+    // STEP 1: Add DiscordInfrastructureTransform first (watches for infrastructure readiness)
+    console.log('🔧 Adding DiscordInfrastructureTransform...');
+    space.emit({
+      topic: 'component:add',
+      source: space.getRef(),
+      timestamp: Date.now(),
+      payload: {
+        elementId: 'root',
+        componentType: 'DiscordInfrastructureTransform',
+        componentClass: 'transform',
+        config: { discordConfig }
+      }
+    });
+
+    // STEP 2: Add all RETM infrastructure components
+    console.log('➕ Adding Discord RETM components...');
+
+    // Add receptors
+    const receptorTypes = [
+      'DiscordConnectedReceptor',
+      'DiscordMessageReceptor',
+      'DiscordHistorySyncReceptor',
+      'DiscordMessageUpdateReceptor',
+      'DiscordMessageDeleteReceptor'
+    ];
+
+    for (const type of receptorTypes) {
       space.emit({
-        topic: 'element:create',
+        topic: 'component:add',
         source: space.getRef(),
         timestamp: Date.now(),
         payload: {
-          parentId: 'root',
-          elementId: 'discord',  // ✨ Predefined stable ID!
-          name: 'discord',
-          elementType: 'Element',
-          components: [
-            { 
-              type: 'DiscordAfferent',
-              config: {
-                host: this.config.discord.host,
-                path: '/ws',
-                guild: this.config.discord.guild,
-                agent: this.config.agentName,
-                token: botToken,
-                autoJoinChannels: this.config.discord.autoJoinChannels || [],
-                _axonMetadata: {
-                  moduleUrl: `http://localhost:${modulePort}/modules/discord-afferent/module`,
-                  manifestUrl: `http://localhost:${modulePort}/modules/discord-afferent/manifest`
-                }
-              }
-            }
-          ]
+          elementId: 'root',
+          componentType: type,
+          componentClass: 'receptor',
+          config: {}
         }
       });
-      
-      // Wait for element to be created (next frame)
-      await new Promise(resolve => setTimeout(resolve, 100));
-      
-      // Find the created element
-      discordElem = space.children.find((child) => child.name === 'discord');
-    } else {
-      console.log('✅ Found existing Discord element from persistence');
     }
+
+    // Add DiscordSpeechEffector (needs discord element reference)
+    space.emit({
+      topic: 'component:add',
+      source: space.getRef(),
+      timestamp: Date.now(),
+      payload: {
+        elementId: 'root',
+        componentType: 'DiscordSpeechEffector',
+        componentClass: 'effector',
+        config: { discordElementId: 'discord' }
+      }
+    });
+
+    // Add DiscordAutoJoinEffector if configured
+    if (this.config.discord.autoJoinChannels && this.config.discord.autoJoinChannels.length > 0) {
+      space.emit({
+        topic: 'component:add',
+        source: space.getRef(),
+        timestamp: Date.now(),
+        payload: {
+          elementId: 'root',
+          componentType: 'DiscordAutoJoinEffector',
+          componentClass: 'effector',
+          config: {
+            channels: this.config.discord.autoJoinChannels,
+            discordElementId: 'discord'
+          }
+        }
+      });
+    }
+
+    // Add AgentEffector and ContextTransform
+    space.emit({
+      topic: 'component:add',
+      source: space.getRef(),
+      timestamp: Date.now(),
+      payload: {
+        elementId: 'root',
+        componentType: 'AgentEffector',
+        componentClass: 'effector',
+        config: { agentElementId: 'discord-agent' }
+      }
+    });
+
+    space.emit({
+      topic: 'component:add',
+      source: space.getRef(),
+      timestamp: Date.now(),
+      payload: {
+        elementId: 'root',
+        componentType: 'ContextTransform',
+        componentClass: 'transform',
+        config: {}
+      }
+    });
+
+    // Wait for infrastructure components to be created
+    await new Promise(resolve => setTimeout(resolve, 100));
+
+    console.log('✅ Infrastructure components added - Discord element will be created when ready');
     
     // Create agent element declaratively via VEIL (only if it doesn't exist)
     let agentElem = space.children.find((child) => child.name === 'discord-agent');
@@ -1102,17 +1263,18 @@ export class DiscordApplication implements ConnectomeApplication {
   
   getComponentRegistry(): typeof ComponentRegistry {
     const registry = ComponentRegistry;
-    
+
     // Register all components that can be restored
     // AxonLoaderComponent removed - AXON components are loaded on-demand by maintainer
     registry.register('AgentComponent', AgentComponent);
     registry.register('DiscordAutoJoinComponent', DiscordAutoJoinComponent);
     registry.register('DiscordAutoJoinEffector', DiscordAutoJoinEffector);
-    
+
     // Register RETM components (stateless but need to be restored)
     registry.register('ElementRequestReceptor', ElementRequestReceptor);
     registry.register('ElementTreeTransform', ElementTreeTransform);
     registry.register('ElementTreeMaintainer', ElementTreeMaintainer);
+    registry.register('DiscordInfrastructureTransform', DiscordInfrastructureTransform);
     registry.register('DiscordConnectedReceptor', DiscordConnectedReceptor);
     registry.register('DiscordMessageReceptor', DiscordMessageReceptor);
     registry.register('DiscordHistorySyncReceptor', DiscordHistorySyncReceptor);
@@ -1122,111 +1284,20 @@ export class DiscordApplication implements ConnectomeApplication {
     registry.register('AgentEffector', AgentEffector);
     registry.register('ContextTransform', ContextTransform);
     registry.register('DiscordAutoJoinEffector', DiscordAutoJoinEffector);
-    
+
     return registry;
   }
   
   async onStart(space: Space, veilState: VEILStateManager): Promise<void> {
     console.log('🚀 Discord application started!');
-    
-    // Mount core RETM components for element tree management
-    // Now create all other components declaratively via component:add events
-    // This creates element-tree facets that persist across restores
-    console.log('➕ Creating Discord RETM components via VEIL');
-    
-    // Reuse discordElem from earlier
-    let agentElem = space.children.find(child => child.name === 'discord-agent');
-    
-    // Emit component:add events for Space-level components
-    const spaceComponents = [
-      { type: 'DiscordConnectedReceptor', class: 'receptor' },
-      { type: 'DiscordMessageReceptor', class: 'receptor' },
-      { type: 'DiscordHistorySyncReceptor', class: 'receptor' },
-      { type: 'DiscordMessageUpdateReceptor', class: 'receptor' },
-      { type: 'DiscordMessageDeleteReceptor', class: 'receptor' },
-    ];
-    
-    for (const comp of spaceComponents) {
-      space.emit({
-        topic: 'component:add',
-        source: space.getRef(),
-        timestamp: Date.now(),
-        payload: {
-          elementId: 'root',
-          componentType: comp.type,
-          componentClass: comp.class,
-          config: {}
-        }
-      });
-    }
-    
-    // DiscordSpeechEffector needs reference to discord element
-    // Use stable 'discord' ID (not discordElem.id which might not be set yet)
-    space.emit({
-      topic: 'component:add',
-      source: space.getRef(),
-      timestamp: Date.now(),
-      payload: {
-        elementId: 'root',
-        componentType: 'DiscordSpeechEffector',
-        componentClass: 'effector',
-        config: { discordElementId: 'discord' }  // ✨ Stable ID!
-      }
-    });
-    
-    // DiscordAutoJoinEffector also needs discord element
-    if (this.config.discord.autoJoinChannels && this.config.discord.autoJoinChannels.length > 0) {
-      space.emit({
-        topic: 'component:add',
-        source: space.getRef(),
-        timestamp: Date.now(),
-        payload: {
-          elementId: 'root',
-          componentType: 'DiscordAutoJoinEffector',
-          componentClass: 'effector',
-          config: {
-            channels: this.config.discord.autoJoinChannels,
-            discordElementId: 'discord'  // ✨ Stable ID!
-          }
-        }
-      });
-    }
-    
-    // AgentEffector and ContextTransform for agent processing
-    // Use stable 'discord-agent' ID
-    space.emit({
-      topic: 'component:add',
-      source: space.getRef(),
-      timestamp: Date.now(),
-      payload: {
-        elementId: 'root',
-        componentType: 'AgentEffector',
-        componentClass: 'effector',
-        config: { agentElementId: 'discord-agent' }  // ✨ Stable ID!
-      }
-    });
-        
-    space.emit({
-      topic: 'component:add',
-      source: space.getRef(),
-      timestamp: Date.now(),
-      payload: {
-        elementId: 'root',
-        componentType: 'ContextTransform',
-        componentClass: 'transform',
-        config: {}
-      }
-    });
-    
-    // Wait for components to be created (next frame)
-    await new Promise(resolve => setTimeout(resolve, 100));
-    
-    console.log('✅ Discord RETM components created via VEIL');
-    
-    // All AXON modules are now loaded by ElementTreeMaintainer during component creation
+
+    // All RETM infrastructure components are now added during initialize()
+    // The DiscordInfrastructureTransform will create the Discord element when ready
+    // All AXON modules are loaded by ElementTreeMaintainer during component creation
     // Maintainer calls setConnectionParams which triggers connection and auto-join
-    console.log('✅ All connections established');
-    
+
+    console.log('✅ Discord application ready - waiting for infrastructure to create Discord element');
+
     // No need to register tools - agent discovers them from action-definition facets in VEIL!
   }
   
