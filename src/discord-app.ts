@@ -677,22 +677,40 @@ class DiscordAutoJoinEffector extends BaseEffector {
   
   async process(changes: FacetDelta[], state: ReadonlyVEILState): Promise<EffectorResult> {
     const events: SpaceEvent[] = [];
-    
+
+    // Lazy lookup: Try to find Discord element if we don't have it yet
+    if (!this.discordElement) {
+      const space = this.element?.findSpace();
+      const discordElementId = (this as any).discordElementId;
+
+      if (discordElementId && space) {
+        this.discordElement = space.children.find(c => c.id === discordElementId);
+      }
+
+      if (!this.discordElement && space) {
+        this.discordElement = space.children.find(c => c.name === 'discord');
+      }
+
+      if (this.discordElement) {
+        console.log('[DiscordAutoJoinEffector] Found Discord element on lazy lookup');
+      }
+    }
+
     // Skip if not configured yet
     if (!this.discordElement || !this.channels || this.channels.length === 0) {
       return { events };
     }
-    
+
     // Check if we have a discord:connected facet
     const hasConnected = changes.some(
-      c => c.type === 'added' && c.facet.type === 'event' && 
+      c => c.type === 'added' && c.facet.type === 'event' &&
       (c.facet as any).state?.eventType === 'discord-connected'
     );
-    
+
     if (!hasConnected) {
       return { events };
     }
-    
+
     console.log('🤖 Discord connected! Auto-joining channels:', this.channels);
     
     // Call join on the Discord afferent
@@ -751,63 +769,82 @@ class DiscordSpeechEffector extends BaseEffector {
   
   async process(changes: FacetDelta[], state: ReadonlyVEILState): Promise<EffectorResult> {
     const events: SpaceEvent[] = [];
-    
+
+    // Lazy lookup: Try to find Discord element if we don't have it yet
+    if (!this.discordElement) {
+      const space = this.element?.findSpace();
+      const config = (this as any).config || {};
+      const discordElementId = config.discordElementId;
+
+      if (discordElementId && space) {
+        this.discordElement = space.children.find(c => c.id === discordElementId);
+      }
+
+      if (!this.discordElement && space) {
+        this.discordElement = space.children.find(c => c.name === 'discord');
+      }
+
+      if (this.discordElement) {
+        console.log('[DiscordSpeechEffector] Found Discord element on lazy lookup');
+      }
+    }
+
     for (const change of changes) {
       if (change.type !== 'added' || change.facet.type !== 'speech') continue;
-      
+
       const speech = change.facet as any;
       const streamId = speech.streamId;
       let content = speech.content;
-      
+
       // Check if this is for Discord
       if (!streamId || !streamId.startsWith('discord:')) continue;
-      
+
       console.log(`[DiscordSpeechEffector] Processing speech for stream: ${streamId}`);
-      
+
       // Check for reply syntax: <reply:@username> message
       const replyMatch = content.match(/^<reply:@([^>]+)>\s*/);
       let replyToUsername = null;
       let replyToMessageId = null;
-      
+
       if (replyMatch) {
         replyToUsername = replyMatch[1];
         content = content.substring(replyMatch[0].length); // Strip reply syntax
         console.log(`[DiscordSpeechEffector] Detected reply to @${replyToUsername}`);
-        
+
         // Infer which message to reply to using heuristics
         replyToMessageId = this.inferReplyTarget(replyToUsername, speech, state);
       }
-      
+
       // Find the channel ID
       const discordMessages = Array.from(state.facets.values()).filter(
         f => f.type === 'event' && f.state.eventType === 'discord-message'
       );
-      
+
       if (discordMessages.length === 0) {
         console.warn('[DiscordSpeechEffector] No discord-message facets found');
         continue;
       }
-      
+
       const latestMessage = discordMessages[discordMessages.length - 1] as any;
       const channelId = latestMessage.attributes?.channelId;
-      
+
       if (!channelId) {
         console.warn('[DiscordSpeechEffector] No channelId in message facet');
         continue;
       }
-      
+
       // Send message (as reply if we have a target)
       const sendParams: any = { channelId, message: content };
       if (replyToMessageId) {
         sendParams.replyTo = replyToMessageId;
         console.log(`[DiscordSpeechEffector] Sending as reply to message ${replyToMessageId}`);
       }
-      
+
       console.log(`[DiscordSpeechEffector] Sending to channel ${channelId}: "${content}"`);
-      
+
       // Call send on the Discord afferent
       if (!this.discordElement) {
-        console.error('[DiscordSpeechEffector] Discord element not available');
+        console.error('[DiscordSpeechEffector] Discord element not available (even after lazy lookup)');
         continue;
       }
       const components = this.discordElement.components as any[];
