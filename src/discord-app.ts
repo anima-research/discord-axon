@@ -36,10 +36,25 @@ export interface DiscordAppConfig {
  */
 class DiscordConnectedReceptor extends BaseReceptor {
   topics = ['discord:connected'];
-  
+
   transform(event: SpaceEvent, state: ReadonlyVEILState): any[] {
     console.log('[DiscordConnectedReceptor] Processing discord:connected event');
-    return [{
+    const payload = event.payload as any;
+
+    const deltas: any[] = [];
+
+    // Store bot user ID in a persistent config facet for easy access
+    if (payload.botUserId) {
+      console.log(`[DiscordConnectedReceptor] Storing bot user ID: ${payload.botUserId}`);
+      deltas.push(...updateStateFacets(
+        'discord-config',
+        { botUserId: payload.botUserId },
+        state
+      ));
+    }
+
+    // Also create the connection event facet
+    deltas.push({
       type: 'addFacet',
       facet: {
         id: `discord-connected-${Date.now()}`,
@@ -49,9 +64,11 @@ class DiscordConnectedReceptor extends BaseReceptor {
           source: 'discord',
           eventType: 'discord-connected'
         },
-        attributes: event.payload as Record<string, any>
+        attributes: payload as Record<string, any>
       }
-    }];
+    });
+
+    return deltas;
   }
 }
 
@@ -76,9 +93,16 @@ class DiscordMessageReceptor extends BaseReceptor {
     }
     
     console.log(`[DiscordMessageReceptor] Processing message from ${author}: "${content}"${isHistory ? ' (history)' : ''}${reply ? ' (reply)' : ''}`);
-    
+
     const deltas: any[] = [];
-    const botUserId = '1382891708513128485'; // TODO: Make this configurable
+
+    // Retrieve bot user ID from VEIL state (set by DiscordConnectedReceptor)
+    const botConfigFacet = state.facets.get('discord-config-botUserId');
+    const botUserId = botConfigFacet?.state?.value;
+
+    if (!botUserId) {
+      console.warn('[DiscordMessageReceptor] Bot user ID not found in VEIL state, skipping activation checks');
+    }
     
     // Format content with reply syntax if this is a reply
     let formattedContent = content;
@@ -160,9 +184,7 @@ class DiscordMessageReceptor extends BaseReceptor {
     
     // Only activate agent for live messages (not history)
     // AND only if the bot is mentioned or replied to
-    if (!isHistory) {
-      const botUserId = '1382891708513128485'; // TODO: Make this configurable
-      
+    if (!isHistory && botUserId) {
       // Check if bot is mentioned
       const botMentioned = mentions?.users?.some((u: any) => u.id === botUserId);
       
@@ -751,7 +773,14 @@ class DiscordSpeechEffector extends BaseEffector {
     }
     
     // Heuristic 2: Find last message from username that mentioned the bot or replied to it
-    const botUserId = '1382891708513128485'; // TODO: Make this configurable
+    // Retrieve bot user ID from VEIL state
+    const botConfigFacet = state.facets.get('discord-config-botUserId');
+    const botUserId = botConfigFacet?.state?.value;
+
+    if (!botUserId) {
+      console.log(`[DiscordSpeechEffector] Bot user ID not found in VEIL, using fallback heuristic`);
+    }
+
     for (let i = discordMessages.length - 1; i >= 0; i--) {
       const msg = discordMessages[i];
       if (msg.state?.metadata?.author !== username) continue;
