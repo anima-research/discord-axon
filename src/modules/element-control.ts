@@ -163,7 +163,7 @@ export function createModule(env: IAxonEnvironmentV2) {
         facet: {
           id: 'action-def-element-control-createElement',
           type: 'action-definition',
-          content: 'Create a new element with custom configuration',
+          // No content - action-definition is metadata, not renderable
           displayName: 'element-control.createElement',
           attributes: {
             toolName: 'element-control.createElement',
@@ -191,7 +191,7 @@ export function createModule(env: IAxonEnvironmentV2) {
         facet: {
           id: 'action-def-element-control-createBox',
           type: 'action-definition',
-          content: 'Create a new box element with the given name',
+          // No content - action-definition is metadata, not renderable
           displayName: 'element-control.createBox',
           attributes: {
             toolName: 'element-control.createBox',

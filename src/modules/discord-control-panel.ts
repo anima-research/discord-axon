@@ -746,8 +746,8 @@ export function createModule(env: IAxonEnvironment): typeof env.InteractiveCompo
           this.addFacet({
             id: facetId,
             type: 'action-definition',
+            // No content - action-definition is metadata, not renderable
             displayName: action.displayName,
-            content: action.description,
             attributes: {
               agentGenerated: false,
               toolName: action.name,
