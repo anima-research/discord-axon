@@ -617,6 +617,111 @@ class DiscordMessageDeleteReceptor extends BaseReceptor {
 }
 
 /**
+ * Transform: Manages Discord console state based on agent action facets
+ *
+ * Watches for open_console and close_console action facets from the agent
+ * and updates the ambient tool-description facet accordingly.
+ */
+class DiscordConsoleTransform extends BaseTransform {
+  priority = 50; // Run in middle of transform phase
+
+  // Track console state
+  private consoleOpen: boolean = false;
+  private pendingClose: boolean = false;
+  private closeFrameCount: number = 0;
+
+  process(state: ReadonlyVEILState): VEILDelta[] {
+    const deltas: VEILDelta[] = [];
+
+    // Check for action facets that trigger console open/close
+    for (const facet of state.facets.values()) {
+      if (facet.type === 'action' && facet.state?.actionName) {
+        const actionName = facet.state.actionName;
+
+        if (actionName === 'open_console' && !this.consoleOpen) {
+          console.log('[DiscordConsoleTransform] Opening console');
+          this.consoleOpen = true;
+          this.pendingClose = false;
+          this.closeFrameCount = 0;
+
+          // Update ambient facet to show console is open with tool list
+          deltas.push({
+            type: 'rewriteFacet',
+            id: 'discord-console-description',
+            changes: {
+              content: this.getOpenConsoleContent(),
+              attributes: {
+                category: 'discord-control',
+                consoleState: 'open'
+              }
+            }
+          });
+        } else if (actionName === 'close_console' && this.consoleOpen && !this.pendingClose) {
+          console.log('[DiscordConsoleTransform] Initiating console close (will complete after 1 frame)');
+          this.pendingClose = true;
+          this.closeFrameCount = 0;
+
+          // Don't close immediately - wait for a frame as requested
+          deltas.push({
+            type: 'rewriteFacet',
+            id: 'discord-console-description',
+            changes: {
+              content: 'Discord console is closing...',
+              attributes: {
+                category: 'discord-control',
+                consoleState: 'closing'
+              }
+            }
+          });
+        }
+      }
+    }
+
+    // Handle pending close after a frame has passed
+    if (this.pendingClose) {
+      this.closeFrameCount++;
+      if (this.closeFrameCount >= 1) {
+        console.log('[DiscordConsoleTransform] Completing console close');
+        this.consoleOpen = false;
+        this.pendingClose = false;
+        this.closeFrameCount = 0;
+
+        // Close the console
+        deltas.push({
+          type: 'rewriteFacet',
+          id: 'discord-console-description',
+          changes: {
+            content: 'Discord management console available. Use @discord-control.open_console() to see available tools.',
+            attributes: {
+              category: 'discord-control',
+              consoleState: 'closed'
+            }
+          }
+        });
+      }
+    }
+
+    return deltas;
+  }
+
+  private getOpenConsoleContent(): string {
+    return `Discord Console [OPEN]
+
+The console lists available Discord management tools:
+
+🔧 Available Discord Tools:
+• @discord-control.open_console() - Opens this console (currently open)
+• @discord-control.close_console() - Closes this console
+
+For now, this is a demonstration of the console pattern. Additional Discord management tools
+(server listing, channel management, etc.) can be added as secondary tools in future iterations.
+
+The console state is managed by a Transform that detects your action facets and updates
+this ambient tool-description facet accordingly.`;
+  }
+}
+
+/**
  * Transform: Watches for infrastructure components and triggers Discord element creation
  * when all required components are ready. This ensures receptors exist before the
  * Discord afferent connects and emits discord:connected events.
@@ -1207,6 +1312,20 @@ export class DiscordApplication implements ConnectomeApplication {
       }
     });
 
+    // Add DiscordConsoleTransform (manages console open/close)
+    console.log('🔧 Adding DiscordConsoleTransform...');
+    space.emit({
+      topic: 'component:add',
+      source: space.getRef(),
+      timestamp: Date.now(),
+      payload: {
+        elementId: 'root',
+        componentType: 'DiscordConsoleTransform',
+        componentClass: 'transform',
+        config: {}
+      }
+    });
+
     // STEP 2: Add all RETM infrastructure components
     console.log('➕ Adding Discord RETM components...');
 
@@ -1474,6 +1593,7 @@ export class DiscordApplication implements ConnectomeApplication {
     registry.register('ElementTreeTransform', ElementTreeTransform);
     registry.register('ElementTreeMaintainer', ElementTreeMaintainer);
     registry.register('DiscordInfrastructureTransform', DiscordInfrastructureTransform);
+    registry.register('DiscordConsoleTransform', DiscordConsoleTransform);
     registry.register('DiscordConnectedReceptor', DiscordConnectedReceptor);
     registry.register('DiscordMessageReceptor', DiscordMessageReceptor);
     registry.register('DiscordHistorySyncReceptor', DiscordHistorySyncReceptor);
