@@ -732,9 +732,7 @@ The console lists available Discord management tools:
 • {@discord-control.list_channels(guildId: string)} - List all channels in a Discord server by guild ID
 • {@discord-control.join(channelId: string)} - Join a Discord channel by ID to start receiving messages
 • {@discord-control.leave(channelId: string)} - Leave a Discord channel to stop receiving messages from it
-
-The console state is managed by a Transform that detects your action facets and updates
-this ambient tool-description facet accordingly.`;
+`;
   }
 }
 
