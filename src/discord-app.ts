@@ -617,6 +617,62 @@ class DiscordMessageDeleteReceptor extends BaseReceptor {
 }
 
 /**
+ * Receptor: Converts Discord tool result events into tool-result facets
+ *
+ * Watches for discord:guilds-list and discord:channels-list events
+ * and creates tool-result facets that can trigger agent activation.
+ */
+class DiscordToolResultReceptor extends BaseReceptor {
+  topics = ['discord:guilds-list', 'discord:channels-list'];
+
+  transform(event: SpaceEvent, state: ReadonlyVEILState): any[] {
+    console.log(`[DiscordToolResultReceptor] Processing ${event.topic} event`);
+    const payload = event.payload as any;
+    const deltas: any[] = [];
+
+    // Determine tool name based on event topic
+    let toolName: string;
+    let resultData: any;
+
+    if (event.topic === 'discord:guilds-list') {
+      toolName = 'discord-control.list_guilds';
+      resultData = payload.guilds || [];
+    } else if (event.topic === 'discord:channels-list') {
+      toolName = 'discord-control.list_channels';
+      resultData = {
+        guildId: payload.guildId,
+        channels: payload.channels || []
+      };
+    } else {
+      return deltas;
+    }
+
+    // Create tool-result facet
+    deltas.push({
+      type: 'addFacet',
+      facet: {
+        id: `tool-result-${toolName}-${Date.now()}`,
+        type: 'tool-result',
+        displayName: `Result: ${toolName}`,
+        content: JSON.stringify(resultData, null, 2),
+        state: {
+          toolName,
+          result: resultData,
+          timestamp: Date.now()
+        },
+        attributes: {
+          category: 'discord-control',
+          toolName
+        }
+      }
+    });
+
+    console.log(`[DiscordToolResultReceptor] Created tool-result facet for ${toolName}`);
+    return deltas;
+  }
+}
+
+/**
  * Transform: Manages Discord console state based on agent action facets
  *
  * Watches for open_console and close_console action facets from the agent
@@ -691,6 +747,22 @@ class DiscordConsoleTransform extends BaseTransform {
               }
             }
           });
+
+          // Uncompress tool-result facets so they show in HUD
+          for (const resultFacet of state.facets.values()) {
+            if (resultFacet.type === 'tool-result' &&
+                resultFacet.attributes?.category === 'discord-control' &&
+                (resultFacet as any).compressed !== false) {
+              deltas.push({
+                type: 'rewriteFacet',
+                id: resultFacet.id,
+                changes: {
+                  compressed: false
+                }
+              });
+              console.log(`[DiscordConsoleTransform] Showing tool result: ${resultFacet.id}`);
+            }
+          }
         } else if (actionName === 'close_console' && this.consoleOpen) {
           console.log('[DiscordConsoleTransform] Closing console immediately (action:', facet.id, ')');
           this.processedActionIds.add(facet.id);
@@ -714,6 +786,22 @@ class DiscordConsoleTransform extends BaseTransform {
               }
             }
           });
+
+          // Compress tool-result facets so they're hidden from HUD
+          for (const resultFacet of state.facets.values()) {
+            if (resultFacet.type === 'tool-result' &&
+                resultFacet.attributes?.category === 'discord-control' &&
+                (resultFacet as any).compressed !== true) {
+              deltas.push({
+                type: 'rewriteFacet',
+                id: resultFacet.id,
+                changes: {
+                  compressed: true
+                }
+              });
+              console.log(`[DiscordConsoleTransform] Hiding tool result: ${resultFacet.id}`);
+            }
+          }
         }
       }
     }
@@ -737,6 +825,53 @@ The console lists available Discord management tools:
 }
 
 /**
+ * Transform: Triggers agent activation when tool results arrive
+ *
+ * Watches for tool-result facets and emits agent-activation facets
+ * to wake the agent so it can process the results.
+ */
+class DiscordToolResultActivationTransform extends BaseTransform {
+  priority = 100; // Run early in transform phase
+
+  // Track processed tool result IDs to avoid duplicate activations
+  private processedResultIds: Set<string> = new Set();
+
+  process(state: ReadonlyVEILState): VEILDelta[] {
+    const deltas: VEILDelta[] = [];
+
+    // Check for new tool-result facets
+    for (const facet of state.facets.values()) {
+      if (facet.type === 'tool-result' && !this.processedResultIds.has(facet.id)) {
+        console.log(`[DiscordToolResultActivationTransform] New tool result detected: ${facet.id}`);
+        this.processedResultIds.add(facet.id);
+
+        // Emit agent activation
+        deltas.push({
+          type: 'addFacet',
+          facet: {
+            id: `activation-tool-result-${Date.now()}`,
+            type: 'agent-activation',
+            displayName: 'Tool result received',
+            state: {
+              reason: `Tool result received: ${(facet as any).state?.toolName}`,
+              priority: 'normal',
+              sourceAgentId: 'discord-control',
+              sourceAgentName: 'Discord Control Panel'
+            },
+            ephemeral: true,
+            scope: 'global'
+          }
+        });
+
+        console.log(`[DiscordToolResultActivationTransform] Triggered agent activation for tool result`);
+      }
+    }
+
+    return deltas;
+  }
+}
+
+/**
  * Transform: Watches for infrastructure components and triggers Discord element creation
  * when all required components are ready. This ensures receptors exist before the
  * Discord afferent connects and emits discord:connected events.
@@ -751,9 +886,11 @@ class DiscordInfrastructureTransform extends BaseTransform {
   private requiredComponents = new Set([
     'DiscordConnectedReceptor',
     'DiscordMessageReceptor',
+    'DiscordToolResultReceptor',
     'DiscordHistorySyncReceptor',
     'DiscordMessageUpdateReceptor',
     'DiscordMessageDeleteReceptor',
+    'DiscordToolResultActivationTransform',
     'DiscordSpeechEffector',
     'DiscordControlEffector',
     'DiscordTypingEffector',
@@ -1503,6 +1640,20 @@ export class DiscordApplication implements ConnectomeApplication {
       }
     });
 
+    // Add DiscordToolResultActivationTransform (wakes agent on tool results)
+    console.log('🔧 Adding DiscordToolResultActivationTransform...');
+    space.emit({
+      topic: 'component:add',
+      source: space.getRef(),
+      timestamp: Date.now(),
+      payload: {
+        elementId: 'root',
+        componentType: 'DiscordToolResultActivationTransform',
+        componentClass: 'transform',
+        config: {}
+      }
+    });
+
     // STEP 2: Add all RETM infrastructure components
     console.log('➕ Adding Discord RETM components...');
 
@@ -1510,6 +1661,7 @@ export class DiscordApplication implements ConnectomeApplication {
     const receptorTypes = [
       'DiscordConnectedReceptor',
       'DiscordMessageReceptor',
+      'DiscordToolResultReceptor',
       'DiscordHistorySyncReceptor',
       'DiscordMessageUpdateReceptor',
       'DiscordMessageDeleteReceptor'
@@ -1784,8 +1936,10 @@ export class DiscordApplication implements ConnectomeApplication {
     registry.register('ElementTreeMaintainer', ElementTreeMaintainer);
     registry.register('DiscordInfrastructureTransform', DiscordInfrastructureTransform);
     registry.register('DiscordConsoleTransform', DiscordConsoleTransform);
+    registry.register('DiscordToolResultActivationTransform', DiscordToolResultActivationTransform);
     registry.register('DiscordConnectedReceptor', DiscordConnectedReceptor);
     registry.register('DiscordMessageReceptor', DiscordMessageReceptor);
+    registry.register('DiscordToolResultReceptor', DiscordToolResultReceptor);
     registry.register('DiscordHistorySyncReceptor', DiscordHistorySyncReceptor);
     registry.register('DiscordMessageUpdateReceptor', DiscordMessageUpdateReceptor);
     registry.register('DiscordMessageDeleteReceptor', DiscordMessageDeleteReceptor);
