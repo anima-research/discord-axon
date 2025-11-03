@@ -35,9 +35,6 @@ export function createModule(env: IAxonEnvironment): typeof env.InteractiveCompo
     async onMount(): Promise<void> {
       console.log('[DiscordControlPanel] Component mounted');
 
-      // Subscribe to frame events
-      this.element.subscribe('frame:start');
-
       // Register console actions
       this.registerAction('open_console', async () => {
         console.log('[DiscordControlPanel] open_console action called');
@@ -63,35 +60,20 @@ export function createModule(env: IAxonEnvironment): typeof env.InteractiveCompo
         );
       });
 
-      // Don't emit VEIL operations in onMount - wait for first frame
-    }
-
-    async handleEvent(event: ISpaceEvent): Promise<void> {
-      switch (event.topic) {
-        case 'frame:start':
-          // Emit initial ambient facet on first frame
-          if (!this.hasEmittedAmbientFacet) {
-            this.emitInitialAmbientFacet();
-            this.hasEmittedAmbientFacet = true;
-          }
-          break;
+      // Don't emit the ambient facet here - let the Transform manage it exclusively
+      // We only register actions and emit action-definition facets
+      if (!this.hasEmittedAmbientFacet) {
+        this.emitActionDefinitions();
+        this.hasEmittedAmbientFacet = true;
       }
     }
 
-    private emitInitialAmbientFacet(): void {
-      console.log('[DiscordControlPanel] Emitting initial ambient facet');
+    async handleEvent(event: ISpaceEvent): Promise<void> {
+      // No events to handle currently
+    }
 
-      // Emit the tool-use-description ambient facet
-      this.addFacet({
-        id: 'discord-console-description',
-        type: 'ambient',
-        displayName: 'Discord Console',
-        content: 'Discord management console available. Use @discord-control.open_console() to see available tools.',
-        attributes: {
-          category: 'discord-control',
-          consoleState: 'closed'
-        }
-      });
+    private emitActionDefinitions(): void {
+      console.log('[DiscordControlPanel] Emitting action definitions');
 
       // Emit action definition for open_console
       this.addFacet({

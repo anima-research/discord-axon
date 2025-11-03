@@ -627,28 +627,63 @@ class DiscordConsoleTransform extends BaseTransform {
 
   // Track console state
   private consoleOpen: boolean = false;
-  private pendingClose: boolean = false;
-  private closeFrameCount: number = 0;
+
+  // Track processed action facets to avoid re-processing
+  private processedActionIds: Set<string> = new Set();
+
+  // Track if we've created the initial facet
+  private hasCreatedInitialFacet: boolean = false;
 
   process(state: ReadonlyVEILState): VEILDelta[] {
     const deltas: VEILDelta[] = [];
 
+    // Create initial closed-console facet if it doesn't exist
+    if (!this.hasCreatedInitialFacet && !state.facets.has('discord-console-description')) {
+      console.log('[DiscordConsoleTransform] Creating initial closed console facet');
+      this.hasCreatedInitialFacet = true;
+      deltas.push({
+        type: 'addFacet',
+        facet: {
+          id: 'discord-console-description',
+          type: 'ambient',
+          displayName: 'Discord Console',
+          content: 'Discord management console available. Use {@discord-control.open_console()} to see available tools.',
+          attributes: {
+            category: 'discord-control',
+            consoleState: 'closed'
+          }
+        }
+      });
+    }
+
     // Check for action facets that trigger console open/close
     for (const facet of state.facets.values()) {
-      if (facet.type === 'action' && facet.state?.actionName) {
-        const actionName = facet.state.actionName;
+      if (facet.type === 'action' && facet.state?.toolName) {
+        // Skip if we've already processed this action
+        if (this.processedActionIds.has(facet.id)) {
+          continue;
+        }
+
+        // toolName comes as "discord-control.open_console", extract the action name
+        const toolName = facet.state.toolName;
+        const actionName = toolName.includes('.') ? toolName.split('.').pop() : toolName;
 
         if (actionName === 'open_console' && !this.consoleOpen) {
-          console.log('[DiscordConsoleTransform] Opening console');
+          console.log('[DiscordConsoleTransform] Opening console (action:', facet.id, ')');
+          this.processedActionIds.add(facet.id);
           this.consoleOpen = true;
-          this.pendingClose = false;
-          this.closeFrameCount = 0;
 
-          // Update ambient facet to show console is open with tool list
+          // Remove old facet and add updated one (ensures HUD picks it up)
           deltas.push({
-            type: 'rewriteFacet',
-            id: 'discord-console-description',
-            changes: {
+            type: 'removeFacet',
+            id: 'discord-console-description'
+          });
+          deltas.push({
+            type: 'addFacet',
+            facet: {
+              id: 'discord-console-description',
+              type: 'ambient',
+              displayName: 'Discord Console',
               content: this.getOpenConsoleContent(),
               attributes: {
                 category: 'discord-control',
@@ -656,48 +691,30 @@ class DiscordConsoleTransform extends BaseTransform {
               }
             }
           });
-        } else if (actionName === 'close_console' && this.consoleOpen && !this.pendingClose) {
-          console.log('[DiscordConsoleTransform] Initiating console close (will complete after 1 frame)');
-          this.pendingClose = true;
-          this.closeFrameCount = 0;
+        } else if (actionName === 'close_console' && this.consoleOpen) {
+          console.log('[DiscordConsoleTransform] Closing console immediately (action:', facet.id, ')');
+          this.processedActionIds.add(facet.id);
+          this.consoleOpen = false;
 
-          // Don't close immediately - wait for a frame as requested
+          // Close the console immediately - remove and re-add to ensure HUD picks it up
           deltas.push({
-            type: 'rewriteFacet',
-            id: 'discord-console-description',
-            changes: {
-              content: 'Discord console is closing...',
+            type: 'removeFacet',
+            id: 'discord-console-description'
+          });
+          deltas.push({
+            type: 'addFacet',
+            facet: {
+              id: 'discord-console-description',
+              type: 'ambient',
+              displayName: 'Discord Console',
+              content: 'Discord management console available. Use @discord-control.open_console() to see available tools.',
               attributes: {
                 category: 'discord-control',
-                consoleState: 'closing'
+                consoleState: 'closed'
               }
             }
           });
         }
-      }
-    }
-
-    // Handle pending close after a frame has passed
-    if (this.pendingClose) {
-      this.closeFrameCount++;
-      if (this.closeFrameCount >= 1) {
-        console.log('[DiscordConsoleTransform] Completing console close');
-        this.consoleOpen = false;
-        this.pendingClose = false;
-        this.closeFrameCount = 0;
-
-        // Close the console
-        deltas.push({
-          type: 'rewriteFacet',
-          id: 'discord-console-description',
-          changes: {
-            content: 'Discord management console available. Use @discord-control.open_console() to see available tools.',
-            attributes: {
-              category: 'discord-control',
-              consoleState: 'closed'
-            }
-          }
-        });
       }
     }
 
@@ -710,8 +727,8 @@ class DiscordConsoleTransform extends BaseTransform {
 The console lists available Discord management tools:
 
 🔧 Available Discord Tools:
-• @discord-control.open_console() - Opens this console (currently open)
-• @discord-control.close_console() - Closes this console
+• {@discord-control.open_console()} - Opens this console (currently open)
+• {@discord-control.close_console()} - Closes this console
 
 For now, this is a demonstration of the console pattern. Additional Discord management tools
 (server listing, channel management, etc.) can be added as secondary tools in future iterations.
