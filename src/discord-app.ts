@@ -684,7 +684,7 @@ class DiscordConsoleTransform extends BaseTransform {
               id: 'discord-console-description',
               type: 'ambient',
               displayName: 'Discord Console',
-              content: this.getOpenConsoleContent(),
+              content: this.getOpenConsoleContent(state),
               attributes: {
                 category: 'discord-control',
                 consoleState: 'open'
@@ -721,17 +721,15 @@ class DiscordConsoleTransform extends BaseTransform {
     return deltas;
   }
 
-  private getOpenConsoleContent(): string {
+  private getOpenConsoleContent(state: ReadonlyVEILState): string {
     return `Discord Console [OPEN]
 
 The console lists available Discord management tools:
 
 🔧 Available Discord Tools:
-• {@discord-control.open_console()} - Opens this console (currently open)
 • {@discord-control.close_console()} - Closes this console
-
-For now, this is a demonstration of the console pattern. Additional Discord management tools
-(server listing, channel management, etc.) can be added as secondary tools in future iterations.
+• {@discord-control.join(channelId: string)} - Join a Discord channel by ID to start receiving messages
+• {@discord-control.leave(channelId: string)} - Leave a Discord channel to stop receiving messages from it
 
 The console state is managed by a Transform that detects your action facets and updates
 this ambient tool-description facet accordingly.`;
@@ -757,6 +755,7 @@ class DiscordInfrastructureTransform extends BaseTransform {
     'DiscordMessageUpdateReceptor',
     'DiscordMessageDeleteReceptor',
     'DiscordSpeechEffector',
+    'DiscordControlEffector',
     'DiscordTypingEffector',
     'AgentEffector',
     'ContextTransform'
@@ -1216,6 +1215,123 @@ class DiscordSpeechEffector extends BaseEffector {
 }
 
 /**
+ * Effector: Bridges discord-control actions to Discord afferent
+ * Handles join, leave, and other Discord channel management actions
+ */
+class DiscordControlEffector extends BaseEffector {
+  facetFilters = [{ type: 'action' }];
+
+  private discordElement?: Element;
+  private controlPanelElement?: Element;
+
+  async onMount(): Promise<void> {
+    const space = this.element?.findSpace();
+    const config = (this as any).config || {};
+    const discordElementId = config.discordElementId;
+
+    // Find Discord element
+    if (discordElementId && space) {
+      this.discordElement = space.children.find(c => c.id === discordElementId);
+    }
+
+    if (!this.discordElement && space) {
+      this.discordElement = space?.children.find(c => c.name === 'discord');
+    }
+
+    if (!this.discordElement) {
+      console.warn('[DiscordControlEffector] Discord element not found, will search later');
+    }
+  }
+
+  async process(changes: FacetDelta[], state: ReadonlyVEILState): Promise<EffectorResult> {
+    const events: SpaceEvent[] = [];
+
+    // Lazy lookup: Try to find Discord element if we don't have it yet
+    if (!this.discordElement) {
+      const space = this.element?.findSpace();
+      const config = (this as any).config || {};
+      const discordElementId = config.discordElementId;
+
+      if (discordElementId && space) {
+        this.discordElement = space.children.find(c => c.id === discordElementId);
+      }
+
+      if (!this.discordElement && space) {
+        this.discordElement = space.children.find(c => c.name === 'discord');
+      }
+
+      if (this.discordElement) {
+        console.log('[DiscordControlEffector] Found Discord element on lazy lookup');
+      }
+    }
+
+    for (const change of changes) {
+      if (change.type !== 'added' || change.facet.type !== 'action') continue;
+
+      const action = change.facet as any;
+      const toolName = action.state?.toolName;
+
+      // Only handle discord-control actions (not open_console/close_console - those are pure state)
+      if (!toolName || !toolName.startsWith('discord-control.')) continue;
+
+      // Extract action name from toolName (e.g., "discord-control.join" -> "join")
+      const actionName = toolName.split('.').pop();
+
+      // Skip console meta-actions (handled by Transform)
+      if (actionName === 'open_console' || actionName === 'close_console') continue;
+
+      console.log(`[DiscordControlEffector] Processing action: ${actionName}`);
+
+      // Get parameters from action facet
+      const parameters = action.state?.parameters || {};
+
+      // Find Discord afferent component
+      if (!this.discordElement) {
+        console.error('[DiscordControlEffector] Discord element not available');
+        continue;
+      }
+
+      const components = this.discordElement.components as any[];
+      let afferent: any = null;
+
+      for (const comp of components) {
+        // Check if component has the requested action method
+        if (comp[actionName] && typeof comp[actionName] === 'function') {
+          afferent = comp;
+          break;
+        }
+        // Also check actions map (alternative pattern)
+        if (comp.actions && comp.actions.has(actionName)) {
+          afferent = comp;
+          break;
+        }
+      }
+
+      if (!afferent) {
+        console.error(`[DiscordControlEffector] No afferent found with action: ${actionName}`);
+        continue;
+      }
+
+      // Execute the action on the afferent
+      try {
+        if (afferent[actionName]) {
+          await afferent[actionName](parameters);
+          console.log(`[DiscordControlEffector] Successfully executed ${actionName}`);
+        } else if (afferent.actions && afferent.actions.has(actionName)) {
+          const handler = afferent.actions.get(actionName);
+          await handler(parameters);
+          console.log(`[DiscordControlEffector] Successfully executed ${actionName} via actions map`);
+        }
+      } catch (error) {
+        console.error(`[DiscordControlEffector] Failed to execute ${actionName}:`, error);
+      }
+    }
+
+    return { events };
+  }
+}
+
+/**
  * Test component that auto-joins Discord channels when connected
  * DEPRECATED: Use DiscordAutoJoinReceptor instead for RETM architecture
  */
@@ -1377,6 +1493,19 @@ export class DiscordApplication implements ConnectomeApplication {
       payload: {
         elementId: 'root',
         componentType: 'DiscordSpeechEffector',
+        componentClass: 'effector',
+        config: { discordElementId: 'discord' }
+      }
+    });
+
+    // Add DiscordControlEffector (bridges discord-control actions to afferent)
+    space.emit({
+      topic: 'component:add',
+      source: space.getRef(),
+      timestamp: Date.now(),
+      payload: {
+        elementId: 'root',
+        componentType: 'DiscordControlEffector',
         componentClass: 'effector',
         config: { discordElementId: 'discord' }
       }
@@ -1617,6 +1746,7 @@ export class DiscordApplication implements ConnectomeApplication {
     registry.register('DiscordMessageUpdateReceptor', DiscordMessageUpdateReceptor);
     registry.register('DiscordMessageDeleteReceptor', DiscordMessageDeleteReceptor);
     registry.register('DiscordSpeechEffector', DiscordSpeechEffector);
+    registry.register('DiscordControlEffector', DiscordControlEffector);
     registry.register('DiscordTypingEffector', DiscordTypingEffector);
     registry.register('AgentEffector', AgentEffector);
     registry.register('ContextTransform', ContextTransform);

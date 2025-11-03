@@ -60,6 +60,29 @@ export function createModule(env: IAxonEnvironment): typeof env.InteractiveCompo
         );
       });
 
+      // Register Discord channel actions
+      this.registerAction('join', async (params: any) => {
+        console.log('[DiscordControlPanel] join action called with params:', params);
+        // Effector will handle bridging to Discord afferent
+        this.addEvent(
+          `Requesting to join channel ${params.channelId}`,
+          'discord-control:join-requested',
+          `join-requested-${Date.now()}`,
+          { ephemeral: true, channelId: params.channelId }
+        );
+      });
+
+      this.registerAction('leave', async (params: any) => {
+        console.log('[DiscordControlPanel] leave action called with params:', params);
+        // Effector will handle bridging to Discord afferent
+        this.addEvent(
+          `Requesting to leave channel ${params.channelId}`,
+          'discord-control:leave-requested',
+          `leave-requested-${Date.now()}`,
+          { ephemeral: true, channelId: params.channelId }
+        );
+      });
+
       // Don't emit the ambient facet here - let the Transform manage it exclusively
       // We only register actions and emit action-definition facets
       if (!this.hasEmittedAmbientFacet) {
@@ -102,6 +125,48 @@ export function createModule(env: IAxonEnvironment): typeof env.InteractiveCompo
           actionName: 'close_console',
           category: 'discord-control',
           description: 'Closes the Discord management console'
+        }
+      });
+
+      // Emit action definition for join
+      this.addFacet({
+        id: 'discord-action-join',
+        type: 'action-definition',
+        displayName: 'Join Discord Channel',
+        attributes: {
+          agentGenerated: false,
+          toolName: 'join',
+          parameters: {
+            channelId: {
+              type: 'string',
+              required: true,
+              description: 'The ID of the Discord channel to join'
+            }
+          },
+          actionName: 'join',
+          category: 'discord-control',
+          description: 'Join a Discord channel by ID to start receiving messages'
+        }
+      });
+
+      // Emit action definition for leave
+      this.addFacet({
+        id: 'discord-action-leave',
+        type: 'action-definition',
+        displayName: 'Leave Discord Channel',
+        attributes: {
+          agentGenerated: false,
+          toolName: 'leave',
+          parameters: {
+            channelId: {
+              type: 'string',
+              required: true,
+              description: 'The ID of the Discord channel to leave'
+            }
+          },
+          actionName: 'leave',
+          category: 'discord-control',
+          description: 'Leave a Discord channel to stop receiving messages from it'
         }
       });
     }
