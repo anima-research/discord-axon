@@ -728,6 +728,8 @@ The console lists available Discord management tools:
 
 🔧 Available Discord Tools:
 • {@discord-control.close_console()} - Closes this console
+• {@discord-control.list_guilds()} - List all available Discord servers (guilds) that the bot has access to
+• {@discord-control.list_channels(guildId: string)} - List all channels in a Discord server by guild ID
 • {@discord-control.join(channelId: string)} - Join a Discord channel by ID to start receiving messages
 • {@discord-control.leave(channelId: string)} - Leave a Discord channel to stop receiving messages from it
 
@@ -1282,8 +1284,34 @@ class DiscordControlEffector extends BaseEffector {
 
       console.log(`[DiscordControlEffector] Processing action: ${actionName}`);
 
+      // Convert snake_case to camelCase for afferent method names
+      // (control panel uses snake_case, afferent uses camelCase)
+      const camelCaseAction = actionName.replace(/_([a-z])/g, (_, letter) => letter.toUpperCase());
+
       // Get parameters from action facet
-      const parameters = action.state?.parameters || {};
+      let parameters = action.state?.parameters || {};
+
+      // Handle positional parameters for single-parameter actions
+      // If agent passes unnamed parameter (e.g., value), extract it positionally
+      if (actionName === 'list_channels' && !parameters.guildId) {
+        const firstValue = Object.values(parameters)[0];
+        if (firstValue) {
+          parameters = { guildId: firstValue };
+          console.log(`[DiscordControlEffector] Using positional parameter for guildId: ${firstValue}`);
+        }
+      } else if (actionName === 'join' && !parameters.channelId) {
+        const firstValue = Object.values(parameters)[0];
+        if (firstValue) {
+          parameters = { channelId: firstValue };
+          console.log(`[DiscordControlEffector] Using positional parameter for channelId: ${firstValue}`);
+        }
+      } else if (actionName === 'leave' && !parameters.channelId) {
+        const firstValue = Object.values(parameters)[0];
+        if (firstValue) {
+          parameters = { channelId: firstValue };
+          console.log(`[DiscordControlEffector] Using positional parameter for channelId: ${firstValue}`);
+        }
+      }
 
       // Find Discord afferent component
       if (!this.discordElement) {
@@ -1295,13 +1323,18 @@ class DiscordControlEffector extends BaseEffector {
       let afferent: any = null;
 
       for (const comp of components) {
-        // Check if component has the requested action method
+        // Check if component has the requested action method (camelCase)
+        if (comp[camelCaseAction] && typeof comp[camelCaseAction] === 'function') {
+          afferent = comp;
+          break;
+        }
+        // Also try snake_case (for backwards compatibility)
         if (comp[actionName] && typeof comp[actionName] === 'function') {
           afferent = comp;
           break;
         }
         // Also check actions map (alternative pattern)
-        if (comp.actions && comp.actions.has(actionName)) {
+        if (comp.actions && (comp.actions.has(camelCaseAction) || comp.actions.has(actionName))) {
           afferent = comp;
           break;
         }
@@ -1314,10 +1347,23 @@ class DiscordControlEffector extends BaseEffector {
 
       // Execute the action on the afferent
       try {
-        if (afferent[actionName]) {
+        // Try camelCase first (standard for afferent methods)
+        if (afferent[camelCaseAction]) {
+          await afferent[camelCaseAction](parameters);
+          console.log(`[DiscordControlEffector] Successfully executed ${camelCaseAction}`);
+        }
+        // Try snake_case (backwards compatibility)
+        else if (afferent[actionName]) {
           await afferent[actionName](parameters);
           console.log(`[DiscordControlEffector] Successfully executed ${actionName}`);
-        } else if (afferent.actions && afferent.actions.has(actionName)) {
+        }
+        // Try actions map
+        else if (afferent.actions && afferent.actions.has(camelCaseAction)) {
+          const handler = afferent.actions.get(camelCaseAction);
+          await handler(parameters);
+          console.log(`[DiscordControlEffector] Successfully executed ${camelCaseAction} via actions map`);
+        }
+        else if (afferent.actions && afferent.actions.has(actionName)) {
           const handler = afferent.actions.get(actionName);
           await handler(parameters);
           console.log(`[DiscordControlEffector] Successfully executed ${actionName} via actions map`);

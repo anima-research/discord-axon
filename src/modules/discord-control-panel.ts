@@ -83,6 +83,28 @@ export function createModule(env: IAxonEnvironment): typeof env.InteractiveCompo
         );
       });
 
+      this.registerAction('list_guilds', async (params: any) => {
+        console.log('[DiscordControlPanel] list_guilds action called');
+        // Effector will handle bridging to Discord afferent
+        this.addEvent(
+          'Requesting list of Discord servers',
+          'discord-control:list-guilds-requested',
+          `list-guilds-requested-${Date.now()}`,
+          { ephemeral: true }
+        );
+      });
+
+      this.registerAction('list_channels', async (params: any) => {
+        console.log('[DiscordControlPanel] list_channels action called with params:', params);
+        // Effector will handle bridging to Discord afferent
+        this.addEvent(
+          `Requesting list of channels for guild ${params.guildId}`,
+          'discord-control:list-channels-requested',
+          `list-channels-requested-${Date.now()}`,
+          { ephemeral: true, guildId: params.guildId }
+        );
+      });
+
       // Don't emit the ambient facet here - let the Transform manage it exclusively
       // We only register actions and emit action-definition facets
       if (!this.hasEmittedAmbientFacet) {
@@ -167,6 +189,42 @@ export function createModule(env: IAxonEnvironment): typeof env.InteractiveCompo
           actionName: 'leave',
           category: 'discord-control',
           description: 'Leave a Discord channel to stop receiving messages from it'
+        }
+      });
+
+      // Emit action definition for list_guilds
+      this.addFacet({
+        id: 'discord-action-list_guilds',
+        type: 'action-definition',
+        displayName: 'List Discord Servers',
+        attributes: {
+          agentGenerated: false,
+          toolName: 'list_guilds',
+          parameters: {},
+          actionName: 'list_guilds',
+          category: 'discord-control',
+          description: 'List all available Discord servers (guilds) that the bot has access to'
+        }
+      });
+
+      // Emit action definition for list_channels
+      this.addFacet({
+        id: 'discord-action-list_channels',
+        type: 'action-definition',
+        displayName: 'List Discord Channels',
+        attributes: {
+          agentGenerated: false,
+          toolName: 'list_channels',
+          parameters: {
+            guildId: {
+              type: 'string',
+              required: true,
+              description: 'The ID of the Discord server (guild) to list channels from'
+            }
+          },
+          actionName: 'list_channels',
+          category: 'discord-control',
+          description: 'List all channels in a Discord server by guild ID'
         }
       });
     }

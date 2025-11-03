@@ -192,6 +192,24 @@ export function createModule(env: IAxonEnvironmentV2): any {
           this.joinedChannelsCache = this.joinedChannelsCache.filter(id => id !== command.channelId);
           break;
 
+        case 'listGuilds':
+          this.ws.send(JSON.stringify({
+            type: 'listGuilds'
+          }));
+          break;
+
+        case 'listChannels':
+          if (!command.guildId) {
+            console.warn('[DiscordAfferent] listChannels missing guildId');
+            return;
+          }
+
+          this.ws.send(JSON.stringify({
+            type: 'listChannels',
+            guildId: command.guildId
+          }));
+          break;
+
         case 'send':
           if (!command.message) {
             console.warn('[DiscordAfferent] Send command missing message');
@@ -391,7 +409,7 @@ export function createModule(env: IAxonEnvironmentV2): any {
           
         case 'left':
           this.joinedChannelsCache = this.joinedChannelsCache.filter(id => id !== msg.channelId);
-          
+
           this.emit({
             topic: 'discord:channel-left',
             source: { elementId: this.element?.id || 'discord', elementPath: [] },
@@ -399,7 +417,30 @@ export function createModule(env: IAxonEnvironmentV2): any {
             payload: { channelId: msg.channelId }
           });
           break;
-          
+
+        case 'guilds':
+          this.emit({
+            topic: 'discord:guilds-list',
+            source: { elementId: this.element?.id || 'discord', elementPath: [] },
+            timestamp: Date.now(),
+            payload: {
+              guilds: msg.guilds || []
+            }
+          });
+          break;
+
+        case 'channels':
+          this.emit({
+            topic: 'discord:channels-list',
+            source: { elementId: this.element?.id || 'discord', elementPath: [] },
+            timestamp: Date.now(),
+            payload: {
+              guildId: msg.guildId,
+              channels: msg.channels || []
+            }
+          });
+          break;
+
         case 'message_sent':
           // Update tracking
           if (msg.channelId && msg.messageId) {
@@ -576,6 +617,16 @@ export function createModule(env: IAxonEnvironmentV2): any {
     // Public API for action invocation
 
     static actions = {
+      'listGuilds': {
+        description: 'List all available Discord servers (guilds)',
+        parameters: {}
+      },
+      'listChannels': {
+        description: 'List channels in a Discord server',
+        parameters: {
+          guildId: { type: 'string', required: true }
+        }
+      },
       'join': {
         description: 'Join a Discord channel',
         parameters: {
@@ -637,6 +688,19 @@ export function createModule(env: IAxonEnvironmentV2): any {
       this.enqueueCommand({
         type: 'leave',
         channelId: params.channelId
+      });
+    }
+
+    async listGuilds(params: {}): Promise<void> {
+      this.enqueueCommand({
+        type: 'listGuilds'
+      });
+    }
+
+    async listChannels(params: { guildId: string }): Promise<void> {
+      this.enqueueCommand({
+        type: 'listChannels',
+        guildId: params.guildId
       });
     }
 
