@@ -647,14 +647,16 @@ class DiscordToolResultReceptor extends BaseReceptor {
       return deltas;
     }
 
-    // Create tool-result facet 
+    // Create state facet for tool result (no content = not rendered in HUD)
+    // Following the pattern from updateStateFacets() in helpers/factories.ts
     deltas.push({
       type: 'addFacet',
       facet: {
         id: `tool-result-${toolName}-${Date.now()}`,
-        type: 'tool-result',
-        displayName: `Result: ${toolName}`,
-        content: JSON.stringify(resultData, null, 2),
+        type: 'state',
+        displayName: `Discord Control: ${toolName}`,
+        // No content property - this prevents HUD rendering
+        // Data stored in state for transform access only
         state: {
           toolName,
           result: resultData,
@@ -690,6 +692,9 @@ class DiscordConsoleTransform extends BaseTransform {
   // Track if we've created the initial facet
   private hasCreatedInitialFacet: boolean = false;
 
+  // Track tool result facets we've seen to detect new ones
+  private seenToolResultIds: Set<string> = new Set();
+
   process(state: ReadonlyVEILState): VEILDelta[] {
     const deltas: VEILDelta[] = [];
 
@@ -712,6 +717,34 @@ class DiscordConsoleTransform extends BaseTransform {
       });
     }
 
+    // Check for new tool results while console is open
+    if (this.consoleOpen) {
+      let hasNewToolResults = false;
+
+      for (const facet of state.facets.values()) {
+        if (facet.type === 'state' &&
+            facet.attributes?.category === 'discord-control' &&
+            facet.attributes?.toolName &&
+            !this.seenToolResultIds.has(facet.id)) {
+          console.log('[DiscordConsoleTransform] New tool result while console open:', facet.id);
+          this.seenToolResultIds.add(facet.id);
+          hasNewToolResults = true;
+        }
+      }
+
+      // Update console content if new results arrived
+      if (hasNewToolResults) {
+        console.log('[DiscordConsoleTransform] Updating console with new tool results');
+        deltas.push({
+          type: 'rewriteFacet',
+          id: 'discord-console-description',
+          changes: {
+            content: this.getOpenConsoleContent(state)
+          }
+        });
+      }
+    }
+
     // Check for action facets that trigger console open/close
     for (const facet of state.facets.values()) {
       if (facet.type === 'action' && facet.state?.toolName) {
@@ -728,6 +761,15 @@ class DiscordConsoleTransform extends BaseTransform {
           console.log('[DiscordConsoleTransform] Opening console (action:', facet.id, ')');
           this.processedActionIds.add(facet.id);
           this.consoleOpen = true;
+
+          // Track all existing tool results so they're not considered "new"
+          for (const f of state.facets.values()) {
+            if (f.type === 'state' &&
+                f.attributes?.category === 'discord-control' &&
+                f.attributes?.toolName) {
+              this.seenToolResultIds.add(f.id);
+            }
+          }
 
           // Update console to open state
           deltas.push({
@@ -779,9 +821,11 @@ class DiscordConsoleTransform extends BaseTransform {
 
           // Remove all tool-result facets from this console session
           for (const facet of state.facets.values()) {
-            if (facet.type === 'tool-result' &&
-                facet.attributes?.category === 'discord-control') {
-              console.log('[DiscordConsoleTransform] Removing tool-result facet:', facet.id);
+            if (facet.type === 'state' &&
+                facet.attributes?.category === 'discord-control' &&
+                facet.attributes?.toolName) {
+              console.log('[DiscordConsoleTransform] Removing tool-result state facet:', facet.id);
+              this.seenToolResultIds.delete(facet.id); // Clear from tracking
               deltas.push({
                 type: 'removeFacet',
                 id: facet.id
@@ -808,11 +852,12 @@ The console lists available Discord management tools:
 • {@discord-control.leave(channelId: string)} - Leave a Discord channel to stop receiving messages from it
 `;
 
-    // Include tool results in the console content
+    // Include tool results from state facets
     const toolResults: any[] = [];
     for (const facet of state.facets.values()) {
-      if (facet.type === 'tool-result' &&
-          facet.attributes?.category === 'discord-control') {
+      if (facet.type === 'state' &&
+          facet.attributes?.category === 'discord-control' &&
+          facet.attributes?.toolName) {
         toolResults.push(facet);
       }
     }
@@ -826,10 +871,11 @@ The console lists available Discord management tools:
 
         content += `\n• ${toolName}${timestamp ? ` (${timestamp})` : ''}:\n`;
 
-        // Format the result data
-        if (result.content) {
+        // Format the result data from state (state facets don't have content property)
+        if (result.state?.result) {
           // Indent the JSON content
-          const lines = result.content.split('\n');
+          const jsonStr = JSON.stringify(result.state.result, null, 2);
+          const lines = jsonStr.split('\n');
           for (const line of lines) {
             content += `  ${line}\n`;
           }
@@ -844,8 +890,8 @@ The console lists available Discord management tools:
 /**
  * Transform: Triggers agent activation when tool results arrive
  *
- * Watches for tool-result facets and emits agent-activation facets
- * to wake the agent so it can process the results.
+ * Watches for state facets with tool results (discord-control category)
+ * and emits agent-activation facets to wake the agent so it can process the results.
  */
 class DiscordToolResultActivationTransform extends BaseTransform {
   priority = 100; // Run early in transform phase
@@ -856,9 +902,12 @@ class DiscordToolResultActivationTransform extends BaseTransform {
   process(state: ReadonlyVEILState): VEILDelta[] {
     const deltas: VEILDelta[] = [];
 
-    // Check for new tool-result facets
+    // Check for new tool-result state facets
     for (const facet of state.facets.values()) {
-      if (facet.type === 'tool-result' && !this.processedResultIds.has(facet.id)) {
+      if (facet.type === 'state' &&
+          facet.attributes?.category === 'discord-control' &&
+          facet.attributes?.toolName &&
+          !this.processedResultIds.has(facet.id)) {
         console.log(`[DiscordToolResultActivationTransform] New tool result detected: ${facet.id}`);
         this.processedResultIds.add(facet.id);
 
