@@ -721,33 +721,25 @@ export function createModule(env: IAxonEnvironmentV2): typeof env.ControlPanelCo
       return null;
     }
 
-    private emitControlEvent(
-      id: string,
-      content: string,
-      eventType: string,
-      metadata: Record<string, any> = {}
-    ): void {
-      this.addEvent(
-        content,
-        eventType,
-        id,
-        {
-          streamId: 'discord:control',
-          streamType: 'discord',
-          ...metadata
-        }
-      );
-    }
-
     private emitControlError(
       id: string,
       message: string,
       metadata: Record<string, any> = {}
     ): void {
-      this.emitControlEvent(id, message, 'discord-control:error', {
-        severity: 'error',
-        ...metadata
+      // Emit error event - will be transformed to facet by receptor
+      this.element.emit({
+        topic: 'discord:control-error',
+        timestamp: Date.now(),
+        payload: {
+          errorId: id,
+          message,
+          severity: 'error',
+          ...metadata
+        }
       });
+
+      // Activate agent so it sees the error
+      this.reactivateAgent(`Error: ${message}`);
     }
   }
 
@@ -762,7 +754,7 @@ export function createModule(env: IAxonEnvironmentV2): typeof env.ControlPanelCo
    * Transforms all Discord result events into VEIL facets
    */
   class DiscordResultsReceptor extends BaseReceptor {
-    topics = ['discord:guilds-list', 'discord:channels-list', 'discord:channel-joined', 'discord:channel-left'];
+    topics = ['discord:guilds-list', 'discord:channels-list', 'discord:channel-joined', 'discord:channel-left', 'discord:control-error'];
 
     transform(event: any): any[] {
       const payload = event.payload;
@@ -776,6 +768,8 @@ export function createModule(env: IAxonEnvironmentV2): typeof env.ControlPanelCo
           return this.handleChannelJoined(payload);
         case 'discord:channel-left':
           return this.handleChannelLeft(payload);
+        case 'discord:control-error':
+          return this.handleError(payload);
         default:
           return [];
       }
@@ -932,6 +926,32 @@ export function createModule(env: IAxonEnvironmentV2): typeof env.ControlPanelCo
             channelId: payload.channelId,
             timestamp: Date.now(),
             ttl: 5000
+          }
+        }
+      }];
+    }
+
+    private handleError(payload: any): any[] {
+      if (!payload?.message) {
+        console.warn('[DiscordResultsReceptor] Invalid error payload:', payload);
+        return [];
+      }
+
+      return [{
+        type: 'addFacet',
+        facet: {
+          id: `discord-error-${payload.errorId || Date.now()}`,
+          type: 'state',
+          displayName: 'discord-control-error',
+          content: `❌ ${payload.message}`,
+          scope: ['panel:discord-control'],
+          state: {
+            entityType: 'discord-error',
+            severity: payload.severity || 'error',
+            errorId: payload.errorId,
+            message: payload.message,
+            timestamp: Date.now(),
+            ttl: payload.ttl || 10000  // Errors visible for 10 seconds by default
           }
         }
       }];
