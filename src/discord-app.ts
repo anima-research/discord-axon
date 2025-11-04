@@ -616,325 +616,8 @@ class DiscordMessageDeleteReceptor extends BaseReceptor {
   }
 }
 
-/**
- * Receptor: Converts Discord tool result events into tool-result facets
- *
- * Watches for discord:guilds-list and discord:channels-list events
- * and creates tool-result facets that can trigger agent activation.
- */
-class DiscordToolResultReceptor extends BaseReceptor {
-  topics = ['discord:guilds-list', 'discord:channels-list'];
 
-  transform(event: SpaceEvent, state: ReadonlyVEILState): any[] {
-    console.log(`[DiscordToolResultReceptor] Processing ${event.topic} event`);
-    const payload = event.payload as any;
-    const deltas: any[] = [];
 
-    // Determine tool name based on event topic
-    let toolName: string;
-    let resultData: any;
-
-    if (event.topic === 'discord:guilds-list') {
-      toolName = 'discord-control.list_guilds';
-      resultData = payload.guilds || [];
-    } else if (event.topic === 'discord:channels-list') {
-      toolName = 'discord-control.list_channels';
-      resultData = {
-        guildId: payload.guildId,
-        channels: payload.channels || []
-      };
-    } else {
-      return deltas;
-    }
-
-    // Create state facet for tool result (no content = not rendered in HUD)
-    // Following the pattern from updateStateFacets() in helpers/factories.ts
-    deltas.push({
-      type: 'addFacet',
-      facet: {
-        id: `tool-result-${toolName}-${Date.now()}`,
-        type: 'state',
-        displayName: `Discord Control: ${toolName}`,
-        // No content property - this prevents HUD rendering
-        // Data stored in state for transform access only
-        state: {
-          toolName,
-          result: resultData,
-          timestamp: Date.now()
-        },
-        attributes: {
-          category: 'discord-control',
-          toolName
-        }
-      }
-    });
-
-    console.log(`[DiscordToolResultReceptor] Created tool-result facet for ${toolName}`);
-    return deltas;
-  }
-}
-
-/**
- * Transform: Manages Discord console state based on agent action facets
- *
- * Watches for open_console and close_console action facets from the agent
- * and updates the ambient tool-description facet accordingly.
- */
-class DiscordConsoleTransform extends BaseTransform {
-  priority = 50; // Run in middle of transform phase
-
-  // Track console state
-  private consoleOpen: boolean = false;
-
-  // Track processed action facets to avoid re-processing
-  private processedActionIds: Set<string> = new Set();
-
-  // Track if we've created the initial facet
-  private hasCreatedInitialFacet: boolean = false;
-
-  // Track tool result facets we've seen to detect new ones
-  private seenToolResultIds: Set<string> = new Set();
-
-  process(state: ReadonlyVEILState): VEILDelta[] {
-    const deltas: VEILDelta[] = [];
-
-    // Create initial closed-console facet if it doesn't exist
-    if (!this.hasCreatedInitialFacet && !state.facets.has('discord-console-description')) {
-      console.log('[DiscordConsoleTransform] Creating initial closed console facet');
-      this.hasCreatedInitialFacet = true;
-      deltas.push({
-        type: 'addFacet',
-        facet: {
-          id: 'discord-console-description',
-          type: 'ambient',
-          displayName: 'Discord Console',
-          content: 'Discord management console available. Use {@discord-control.open_console()} to see available tools.',
-          attributes: {
-            category: 'discord-control',
-            consoleState: 'closed'
-          }
-        }
-      });
-    }
-
-    // Check for new tool results while console is open
-    if (this.consoleOpen) {
-      let hasNewToolResults = false;
-
-      for (const facet of state.facets.values()) {
-        if (facet.type === 'state' &&
-            facet.attributes?.category === 'discord-control' &&
-            facet.attributes?.toolName &&
-            !this.seenToolResultIds.has(facet.id)) {
-          console.log('[DiscordConsoleTransform] New tool result while console open:', facet.id);
-          this.seenToolResultIds.add(facet.id);
-          hasNewToolResults = true;
-        }
-      }
-
-      // Update console content if new results arrived
-      if (hasNewToolResults) {
-        console.log('[DiscordConsoleTransform] Updating console with new tool results');
-        deltas.push({
-          type: 'rewriteFacet',
-          id: 'discord-console-description',
-          changes: {
-            content: this.getOpenConsoleContent(state)
-          }
-        });
-      }
-    }
-
-    // Check for action facets that trigger console open/close
-    for (const facet of state.facets.values()) {
-      if (facet.type === 'action' && facet.state?.toolName) {
-        // Skip if we've already processed this action
-        if (this.processedActionIds.has(facet.id)) {
-          continue;
-        }
-
-        // toolName comes as "discord-control.open_console", extract the action name
-        const toolName = facet.state.toolName;
-        const actionName = toolName.includes('.') ? toolName.split('.').pop() : toolName;
-
-        if (actionName === 'open_console' && !this.consoleOpen) {
-          console.log('[DiscordConsoleTransform] Opening console (action:', facet.id, ')');
-          this.processedActionIds.add(facet.id);
-          this.consoleOpen = true;
-
-          // Track all existing tool results so they're not considered "new"
-          for (const f of state.facets.values()) {
-            if (f.type === 'state' &&
-                f.attributes?.category === 'discord-control' &&
-                f.attributes?.toolName) {
-              this.seenToolResultIds.add(f.id);
-            }
-          }
-
-          // Update console to open state
-          deltas.push({
-            type: 'rewriteFacet',
-            id: 'discord-console-description',
-            changes: {
-              content: this.getOpenConsoleContent(state),
-              attributes: {
-                category: 'discord-control',
-                consoleState: 'open'
-              }
-            }
-          });
-
-          // Emit agent activation so agent sees the opened console
-          deltas.push({
-            type: 'addFacet',
-            facet: {
-              id: `activation-console-open-${Date.now()}`,
-              type: 'agent-activation',
-              displayName: 'Discord console opened',
-              state: {
-                reason: 'Discord console opened - viewing available tools',
-                priority: 'normal',
-                sourceAgentId: 'discord-control',
-                sourceAgentName: 'Discord Control Panel'
-              },
-              scope: ['global']
-            }
-          });
-          console.log('[DiscordConsoleTransform] Triggered agent activation for console open');
-        } else if (actionName === 'close_console' && this.consoleOpen) {
-          console.log('[DiscordConsoleTransform] Closing console immediately (action:', facet.id, ')');
-          this.processedActionIds.add(facet.id);
-          this.consoleOpen = false;
-
-          // Update console to closed state
-          deltas.push({
-            type: 'rewriteFacet',
-            id: 'discord-console-description',
-            changes: {
-              content: 'Discord management console available. Use @discord-control.open_console() to see available tools.',
-              attributes: {
-                category: 'discord-control',
-                consoleState: 'closed'
-              }
-            }
-          });
-
-          // Remove all tool-result facets from this console session
-          for (const facet of state.facets.values()) {
-            if (facet.type === 'state' &&
-                facet.attributes?.category === 'discord-control' &&
-                facet.attributes?.toolName) {
-              console.log('[DiscordConsoleTransform] Removing tool-result state facet:', facet.id);
-              this.seenToolResultIds.delete(facet.id); // Clear from tracking
-              deltas.push({
-                type: 'removeFacet',
-                id: facet.id
-              });
-            }
-          }
-        }
-      }
-    }
-
-    return deltas;
-  }
-
-  private getOpenConsoleContent(state: ReadonlyVEILState): string {
-    let content = `Discord Console [OPEN]
-
-The console lists available Discord management tools:
-
-🔧 Available Discord Tools:
-• {@discord-control.close_console()} - Closes this console
-• {@discord-control.list_guilds()} - List all available Discord servers (guilds) that the bot has access to
-• {@discord-control.list_channels(guildId: string)} - List all channels in a Discord server by guild ID
-• {@discord-control.join(channelId: string)} - Join a Discord channel by ID to start receiving messages
-• {@discord-control.leave(channelId: string)} - Leave a Discord channel to stop receiving messages from it
-`;
-
-    // Include tool results from state facets
-    const toolResults: any[] = [];
-    for (const facet of state.facets.values()) {
-      if (facet.type === 'state' &&
-          facet.attributes?.category === 'discord-control' &&
-          facet.attributes?.toolName) {
-        toolResults.push(facet);
-      }
-    }
-
-    if (toolResults.length > 0) {
-      content += '\n📊 Recent Tool Results:\n';
-      for (const result of toolResults) {
-        const toolName = result.state?.toolName || 'unknown';
-        const timestamp = result.state?.timestamp ?
-          new Date(result.state.timestamp).toLocaleTimeString() : '';
-
-        content += `\n• ${toolName}${timestamp ? ` (${timestamp})` : ''}:\n`;
-
-        // Format the result data from state (state facets don't have content property)
-        if (result.state?.result) {
-          // Indent the JSON content
-          const jsonStr = JSON.stringify(result.state.result, null, 2);
-          const lines = jsonStr.split('\n');
-          for (const line of lines) {
-            content += `  ${line}\n`;
-          }
-        }
-      }
-    }
-
-    return content;
-  }
-}
-
-/**
- * Transform: Triggers agent activation when tool results arrive
- *
- * Watches for state facets with tool results (discord-control category)
- * and emits agent-activation facets to wake the agent so it can process the results.
- */
-class DiscordToolResultActivationTransform extends BaseTransform {
-  priority = 100; // Run early in transform phase
-
-  // Track processed tool result IDs to avoid duplicate activations
-  private processedResultIds: Set<string> = new Set();
-
-  process(state: ReadonlyVEILState): VEILDelta[] {
-    const deltas: VEILDelta[] = [];
-
-    // Check for new tool-result state facets
-    for (const facet of state.facets.values()) {
-      if (facet.type === 'state' &&
-          facet.attributes?.category === 'discord-control' &&
-          facet.attributes?.toolName &&
-          !this.processedResultIds.has(facet.id)) {
-        console.log(`[DiscordToolResultActivationTransform] New tool result detected: ${facet.id}`);
-        this.processedResultIds.add(facet.id);
-
-        // Emit agent activation
-        deltas.push({
-          type: 'addFacet',
-          facet: {
-            id: `activation-tool-result-${Date.now()}`,
-            type: 'agent-activation',
-            displayName: 'Tool result received',
-            state: {
-              reason: `Tool result received: ${(facet as any).state?.toolName}`,
-              priority: 'normal',
-              sourceAgentId: 'discord-control',
-              sourceAgentName: 'Discord Control Panel'
-            },
-            scope: ['global']
-          }
-        });
-
-        console.log(`[DiscordToolResultActivationTransform] Triggered agent activation for tool result`);
-      }
-    }
-
-    return deltas;
-  }
-}
 
 /**
  * Transform: Watches for infrastructure components and triggers Discord element creation
@@ -951,13 +634,10 @@ class DiscordInfrastructureTransform extends BaseTransform {
   private requiredComponents = new Set([
     'DiscordConnectedReceptor',
     'DiscordMessageReceptor',
-    'DiscordToolResultReceptor',
     'DiscordHistorySyncReceptor',
     'DiscordMessageUpdateReceptor',
     'DiscordMessageDeleteReceptor',
-    'DiscordToolResultActivationTransform',
     'DiscordSpeechEffector',
-    'DiscordControlEffector',
     'DiscordTypingEffector',
     'AgentEffector',
     'ContextTransform'
@@ -1416,166 +1096,6 @@ class DiscordSpeechEffector extends BaseEffector {
   }
 }
 
-/**
- * Effector: Bridges discord-control actions to Discord afferent
- * Handles join, leave, and other Discord channel management actions
- */
-class DiscordControlEffector extends BaseEffector {
-  facetFilters = [{ type: 'action' }];
-
-  private discordElement?: Element;
-  private controlPanelElement?: Element;
-
-  async onMount(): Promise<void> {
-    const space = this.element?.findSpace();
-    const config = (this as any).config || {};
-    const discordElementId = config.discordElementId;
-
-    // Find Discord element
-    if (discordElementId && space) {
-      this.discordElement = space.children.find(c => c.id === discordElementId);
-    }
-
-    if (!this.discordElement && space) {
-      this.discordElement = space?.children.find(c => c.name === 'discord');
-    }
-
-    if (!this.discordElement) {
-      console.warn('[DiscordControlEffector] Discord element not found, will search later');
-    }
-  }
-
-  async process(changes: FacetDelta[], state: ReadonlyVEILState): Promise<EffectorResult> {
-    const events: SpaceEvent[] = [];
-
-    // Lazy lookup: Try to find Discord element if we don't have it yet
-    if (!this.discordElement) {
-      const space = this.element?.findSpace();
-      const config = (this as any).config || {};
-      const discordElementId = config.discordElementId;
-
-      if (discordElementId && space) {
-        this.discordElement = space.children.find(c => c.id === discordElementId);
-      }
-
-      if (!this.discordElement && space) {
-        this.discordElement = space.children.find(c => c.name === 'discord');
-      }
-
-      if (this.discordElement) {
-        console.log('[DiscordControlEffector] Found Discord element on lazy lookup');
-      }
-    }
-
-    for (const change of changes) {
-      if (change.type !== 'added' || change.facet.type !== 'action') continue;
-
-      const action = change.facet as any;
-      const toolName = action.state?.toolName;
-
-      // Only handle discord-control actions (not open_console/close_console - those are pure state)
-      if (!toolName || !toolName.startsWith('discord-control.')) continue;
-
-      // Extract action name from toolName (e.g., "discord-control.join" -> "join")
-      const actionName = toolName.split('.').pop();
-
-      // Skip console meta-actions (handled by Transform)
-      if (actionName === 'open_console' || actionName === 'close_console') continue;
-
-      console.log(`[DiscordControlEffector] Processing action: ${actionName}`);
-
-      // Convert snake_case to camelCase for afferent method names
-      // (control panel uses snake_case, afferent uses camelCase)
-      const camelCaseAction = actionName.replace(/_([a-z])/g, (_: string, letter: string) => letter.toUpperCase());
-
-      // Get parameters from action facet
-      let parameters = action.state?.parameters || {};
-
-      // Handle positional parameters for single-parameter actions
-      // If agent passes unnamed parameter (e.g., value), extract it positionally
-      if (actionName === 'list_channels' && !parameters.guildId) {
-        const firstValue = Object.values(parameters)[0];
-        if (firstValue) {
-          parameters = { guildId: firstValue };
-          console.log(`[DiscordControlEffector] Using positional parameter for guildId: ${firstValue}`);
-        }
-      } else if (actionName === 'join' && !parameters.channelId) {
-        const firstValue = Object.values(parameters)[0];
-        if (firstValue) {
-          parameters = { channelId: firstValue };
-          console.log(`[DiscordControlEffector] Using positional parameter for channelId: ${firstValue}`);
-        }
-      } else if (actionName === 'leave' && !parameters.channelId) {
-        const firstValue = Object.values(parameters)[0];
-        if (firstValue) {
-          parameters = { channelId: firstValue };
-          console.log(`[DiscordControlEffector] Using positional parameter for channelId: ${firstValue}`);
-        }
-      }
-
-      // Find Discord afferent component
-      if (!this.discordElement) {
-        console.error('[DiscordControlEffector] Discord element not available');
-        continue;
-      }
-
-      const components = this.discordElement.components as any[];
-      let afferent: any = null;
-
-      for (const comp of components) {
-        // Check if component has the requested action method (camelCase)
-        if (comp[camelCaseAction] && typeof comp[camelCaseAction] === 'function') {
-          afferent = comp;
-          break;
-        }
-        // Also try snake_case (for backwards compatibility)
-        if (comp[actionName] && typeof comp[actionName] === 'function') {
-          afferent = comp;
-          break;
-        }
-        // Also check actions map (alternative pattern)
-        if (comp.actions && (comp.actions.has(camelCaseAction) || comp.actions.has(actionName))) {
-          afferent = comp;
-          break;
-        }
-      }
-
-      if (!afferent) {
-        console.error(`[DiscordControlEffector] No afferent found with action: ${actionName}`);
-        continue;
-      }
-
-      // Execute the action on the afferent
-      try {
-        // Try camelCase first (standard for afferent methods)
-        if (afferent[camelCaseAction]) {
-          await afferent[camelCaseAction](parameters);
-          console.log(`[DiscordControlEffector] Successfully executed ${camelCaseAction}`);
-        }
-        // Try snake_case (backwards compatibility)
-        else if (afferent[actionName]) {
-          await afferent[actionName](parameters);
-          console.log(`[DiscordControlEffector] Successfully executed ${actionName}`);
-        }
-        // Try actions map
-        else if (afferent.actions && afferent.actions.has(camelCaseAction)) {
-          const handler = afferent.actions.get(camelCaseAction);
-          await handler(parameters);
-          console.log(`[DiscordControlEffector] Successfully executed ${camelCaseAction} via actions map`);
-        }
-        else if (afferent.actions && afferent.actions.has(actionName)) {
-          const handler = afferent.actions.get(actionName);
-          await handler(parameters);
-          console.log(`[DiscordControlEffector] Successfully executed ${actionName} via actions map`);
-        }
-      } catch (error) {
-        console.error(`[DiscordControlEffector] Failed to execute ${actionName}:`, error);
-      }
-    }
-
-    return { events };
-  }
-}
 
 /**
  * Test component that auto-joins Discord channels when connected
@@ -1691,33 +1211,6 @@ export class DiscordApplication implements ConnectomeApplication {
       }
     });
 
-    // Add DiscordConsoleTransform (manages console open/close)
-    console.log('🔧 Adding DiscordConsoleTransform...');
-    space.emit({
-      topic: 'component:add',
-      source: space.getRef(),
-      timestamp: Date.now(),
-      payload: {
-        elementId: 'root',
-        componentType: 'DiscordConsoleTransform',
-        componentClass: 'transform',
-        config: {}
-      }
-    });
-
-    // Add DiscordToolResultActivationTransform (wakes agent on tool results)
-    console.log('🔧 Adding DiscordToolResultActivationTransform...');
-    space.emit({
-      topic: 'component:add',
-      source: space.getRef(),
-      timestamp: Date.now(),
-      payload: {
-        elementId: 'root',
-        componentType: 'DiscordToolResultActivationTransform',
-        componentClass: 'transform',
-        config: {}
-      }
-    });
 
     // STEP 2: Add all RETM infrastructure components
     console.log('➕ Adding Discord RETM components...');
@@ -1726,7 +1219,6 @@ export class DiscordApplication implements ConnectomeApplication {
     const receptorTypes = [
       'DiscordConnectedReceptor',
       'DiscordMessageReceptor',
-      'DiscordToolResultReceptor',
       'DiscordHistorySyncReceptor',
       'DiscordMessageUpdateReceptor',
       'DiscordMessageDeleteReceptor'
@@ -1759,18 +1251,6 @@ export class DiscordApplication implements ConnectomeApplication {
       }
     });
 
-    // Add DiscordControlEffector (bridges discord-control actions to afferent)
-    space.emit({
-      topic: 'component:add',
-      source: space.getRef(),
-      timestamp: Date.now(),
-      payload: {
-        elementId: 'root',
-        componentType: 'DiscordControlEffector',
-        componentClass: 'effector',
-        config: { discordElementId: 'discord' }
-      }
-    });
 
     // Add DiscordTypingEffector (sends typing indicators on agent activation)
     space.emit({
@@ -2000,16 +1480,12 @@ export class DiscordApplication implements ConnectomeApplication {
     registry.register('ElementTreeTransform', ElementTreeTransform);
     registry.register('ElementTreeMaintainer', ElementTreeMaintainer);
     registry.register('DiscordInfrastructureTransform', DiscordInfrastructureTransform);
-    registry.register('DiscordConsoleTransform', DiscordConsoleTransform);
-    registry.register('DiscordToolResultActivationTransform', DiscordToolResultActivationTransform);
     registry.register('DiscordConnectedReceptor', DiscordConnectedReceptor);
     registry.register('DiscordMessageReceptor', DiscordMessageReceptor);
-    registry.register('DiscordToolResultReceptor', DiscordToolResultReceptor);
     registry.register('DiscordHistorySyncReceptor', DiscordHistorySyncReceptor);
     registry.register('DiscordMessageUpdateReceptor', DiscordMessageUpdateReceptor);
     registry.register('DiscordMessageDeleteReceptor', DiscordMessageDeleteReceptor);
     registry.register('DiscordSpeechEffector', DiscordSpeechEffector);
-    registry.register('DiscordControlEffector', DiscordControlEffector);
     registry.register('DiscordTypingEffector', DiscordTypingEffector);
     registry.register('AgentEffector', AgentEffector);
     registry.register('ContextTransform', ContextTransform);
