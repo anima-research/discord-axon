@@ -14,6 +14,7 @@ import { Component } from 'connectome-ts/src/spaces/component';
 import { SpaceEvent } from 'connectome-ts/src/spaces/types';
 import { BaseReceptor, BaseEffector, BaseTransform } from 'connectome-ts/src/components/base-martem';
 import { AgentEffector } from 'connectome-ts/src/agent/agent-effector';
+import { ActionEffector } from 'connectome-ts/src/spaces/action-effector';
 import { ContextTransform } from 'connectome-ts/src/hud/context-transform';
 import { ElementRequestReceptor, ElementTreeMaintainer, ElementTreeTransform } from 'connectome-ts/src/spaces/element-tree-receptors';
 import type { Facet, ReadonlyVEILState, FacetDelta, EffectorResult, AgentInterface, VEILDelta } from 'connectome-ts/src';
@@ -640,6 +641,7 @@ class DiscordInfrastructureTransform extends BaseTransform {
     'DiscordSpeechEffector',
     'DiscordTypingEffector',
     'AgentEffector',
+    'ActionEffector',
     'ContextTransform'
   ]);
 
@@ -1283,7 +1285,7 @@ export class DiscordApplication implements ConnectomeApplication {
       });
     }
 
-    // Add AgentEffector and ContextTransform
+    // Add AgentEffector, ActionEffector, and ContextTransform
     space.emit({
       topic: 'component:add',
       source: space.getRef(),
@@ -1293,6 +1295,18 @@ export class DiscordApplication implements ConnectomeApplication {
         componentType: 'AgentEffector',
         componentClass: 'effector',
         config: { agentElementId: 'discord-agent' }
+      }
+    });
+
+    space.emit({
+      topic: 'component:add',
+      source: space.getRef(),
+      timestamp: Date.now(),
+      payload: {
+        elementId: 'root',
+        componentType: 'ActionEffector',
+        componentClass: 'effector',
+        config: {}
       }
     });
 
@@ -1488,6 +1502,7 @@ export class DiscordApplication implements ConnectomeApplication {
     registry.register('DiscordSpeechEffector', DiscordSpeechEffector);
     registry.register('DiscordTypingEffector', DiscordTypingEffector);
     registry.register('AgentEffector', AgentEffector);
+    registry.register('ActionEffector', ActionEffector);
     registry.register('ContextTransform', ContextTransform);
     registry.register('DiscordAutoJoinEffector', DiscordAutoJoinEffector);
     
