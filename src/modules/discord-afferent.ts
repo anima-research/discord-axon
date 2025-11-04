@@ -19,8 +19,9 @@ interface DiscordConfig {
 }
 
 interface DiscordCommand {
-  type: 'join' | 'leave' | 'send' | 'registerSlashCommand' | 'unregisterSlashCommand' | 'sendTyping' | 'replyToInteraction';
+  type: 'join' | 'leave' | 'send' | 'registerSlashCommand' | 'unregisterSlashCommand' | 'sendTyping' | 'replyToInteraction' | 'listGuilds' | 'listChannels';
   channelId?: string;
+  guildId?: string;
   message?: string;
   replyTo?: string;  // Message ID to reply to
   scrollback?: number;
