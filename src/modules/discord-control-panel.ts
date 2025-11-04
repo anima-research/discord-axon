@@ -64,10 +64,6 @@ export function createModule(env: IAxonEnvironmentV2): typeof env.ControlPanelCo
     @persistent
     private showCategories: boolean = true;
 
-    // Track result facet IDs for cleanup on panel close
-    @persistent
-    private resultFacetIds: Set<string> = new Set();
-
     // Discord element reference (lazy loaded)
     private discordElement?: any;
     private discordElementId?: string;
@@ -78,8 +74,7 @@ export function createModule(env: IAxonEnvironmentV2): typeof env.ControlPanelCo
       { propertyKey: 'availableChannels' },
       { propertyKey: 'joinedChannels' },
       { propertyKey: 'selectedGuildId' },
-      { propertyKey: 'showCategories' },
-      { propertyKey: 'resultFacetIds' }
+      { propertyKey: 'showCategories' }
     ];
 
     protected async onPanelOpened() {
@@ -89,12 +84,8 @@ export function createModule(env: IAxonEnvironmentV2): typeof env.ControlPanelCo
     }
 
     protected async onPanelClosed() {
-      console.log('[DiscordControlPanel] Panel closed - cleaning up result facets');
-      // Clean up all scoped result facets
-      for (const resultId of this.resultFacetIds) {
-        this.addOperation({ type: 'removeFacet', id: resultId });
-      }
-      this.resultFacetIds.clear();
+      console.log('[DiscordControlPanel] Panel closed');
+      // Result facets are now scoped to panel and will be hidden automatically
     }
 
     async onMount(): Promise<void> {
@@ -393,7 +384,6 @@ export function createModule(env: IAxonEnvironmentV2): typeof env.ControlPanelCo
       });
 
       const resultId = `discord-result-joined-${Date.now()}`;
-      this.resultFacetIds.add(resultId);
 
       this.addFacet({
         id: resultId,
@@ -428,23 +418,7 @@ export function createModule(env: IAxonEnvironmentV2): typeof env.ControlPanelCo
       // Update main panel UI
       this.createControlPanelFacet();
 
-      // Create scoped result facet
-      const resultId = `discord-result-guilds-${Date.now()}`;
-      this.resultFacetIds.add(resultId);
-
-      this.addFacet({
-        id: resultId,
-        type: 'state',
-        content: this.formatGuildsList(),
-        scope: [this.getPanelScope()],
-        attributes: {
-          entityType: 'component',
-          entityId: this.element.id,
-          guilds: payload.guilds,
-          count: payload.guilds.length
-        }
-      });
-
+      // Result facet is now created declaratively by DiscordGuildsListReceptor
       // Re-activate agent so it sees the results
       this.reactivateAgent('Server list retrieved');
     }
@@ -460,25 +434,8 @@ export function createModule(env: IAxonEnvironmentV2): typeof env.ControlPanelCo
       // Update main panel UI
       this.createControlPanelFacet();
 
-      // Create scoped result facet
+      // Result facet is now created declaratively by DiscordChannelsListReceptor
       const guild = this.availableGuilds.find((g: any) => g.id === payload.guildId);
-      const resultId = `discord-result-channels-${payload.guildId}-${Date.now()}`;
-      this.resultFacetIds.add(resultId);
-
-      this.addFacet({
-        id: resultId,
-        type: 'state',
-        content: this.formatChannelsList(payload.channels),
-        scope: [this.getPanelScope()],
-        attributes: {
-          entityType: 'component',
-          entityId: this.element.id,
-          guildId: payload.guildId,
-          guildName: guild?.name,
-          channels: payload.channels,
-          count: payload.channels.length
-        }
-      });
 
       // Re-activate agent so it sees the results
       this.reactivateAgent(`Channel list retrieved for ${guild?.name || payload.guildId}`);
@@ -490,12 +447,7 @@ export function createModule(env: IAxonEnvironmentV2): typeof env.ControlPanelCo
         this.joinedChannels.add(payload.id);
         console.log(`[DiscordControlPanel] Successfully joined channel ${payload.id}`);
 
-        this.emitControlEvent(
-          `discord-joined-${payload.id}`,
-          `Joined ${payload.guildName}:#${payload.name}`,
-          'discord-control:status',
-          { ttl: 5000 }
-        );
+        // Result facet is now created declaratively by DiscordChannelJoinedReceptor
 
         // Re-activate agent
         this.reactivateAgent(`Joined channel #${payload.name}`);
@@ -516,13 +468,8 @@ export function createModule(env: IAxonEnvironmentV2): typeof env.ControlPanelCo
       this.joinedChannels.delete(payload.channelId);
       console.log(`[DiscordControlPanel] Left channel ${payload.channelId}`);
 
+      // Result facet is now created declaratively by DiscordChannelLeftReceptor
       const channel = this.findChannel(payload.channelId);
-      this.emitControlEvent(
-        `discord-left-${payload.channelId}`,
-        `Left ${channel ? `${channel.guildName}:#${channel.name}` : payload.channelId}`,
-        'discord-control:status',
-        { ttl: 5000 }
-      );
 
       // Re-activate agent
       this.reactivateAgent(`Left channel ${channel ? `#${channel.name}` : payload.channelId}`);
@@ -804,14 +751,199 @@ export function createModule(env: IAxonEnvironmentV2): typeof env.ControlPanelCo
     }
   }
 
-  // Import receptors from connectome-ts
-  const { ControlPanelActionsReceptor, PanelScopeReceptor } = env;
+  // Import base receptors from connectome-ts
+  const { ControlPanelActionsReceptor, PanelScopeReceptor, BaseReceptor } = env;
+
+  // ============================================
+  // Discord Results Receptor (Unified)
+  // ============================================
+
+  /**
+   * Transforms all Discord result events into VEIL facets
+   */
+  class DiscordResultsReceptor extends BaseReceptor {
+    topics = ['discord:guilds-list', 'discord:channels-list', 'discord:channel-joined', 'discord:channel-left'];
+
+    transform(event: any): any[] {
+      const payload = event.payload;
+
+      switch (event.topic) {
+        case 'discord:guilds-list':
+          return this.handleGuildsList(payload);
+        case 'discord:channels-list':
+          return this.handleChannelsList(payload);
+        case 'discord:channel-joined':
+          return this.handleChannelJoined(payload);
+        case 'discord:channel-left':
+          return this.handleChannelLeft(payload);
+        default:
+          return [];
+      }
+    }
+
+    private handleGuildsList(payload: any): any[] {
+      if (!payload?.guilds) {
+        console.warn('[DiscordResultsReceptor] Invalid guilds payload:', payload);
+        return [];
+      }
+
+      const parts: string[] = [];
+      payload.guilds.forEach((guild: any) => {
+        parts.push(`${guild.name}`);
+        parts.push(`  ID: ${guild.id}`);
+        if (guild.memberCount) parts.push(`  Members: ${guild.memberCount}`);
+        parts.push('');
+      });
+
+      return [{
+        type: 'addFacet',
+        facet: {
+          id: `discord-result-guilds-${Date.now()}`,
+          type: 'state',
+          displayName: 'discord-guilds-list',
+          content: parts.join('\n'),
+          scope: ['panel:discord-control'],
+          state: {
+            entityType: 'discord-result',
+            resultType: 'guilds-list',
+            guilds: payload.guilds,
+            count: payload.guilds.length,
+            timestamp: Date.now()
+          }
+        }
+      }];
+    }
+
+    private handleChannelsList(payload: any): any[] {
+      if (!payload?.channels || !payload?.guildId) {
+        console.warn('[DiscordResultsReceptor] Invalid channels payload:', payload);
+        return [];
+      }
+
+      const parts: string[] = [];
+      const categories: Map<string, any> = new Map();
+      const uncategorized: any[] = [];
+
+      // Categorize channels
+      payload.channels.forEach((channel: any) => {
+        if (channel.type === 4) {
+          categories.set(channel.id, { id: channel.id, name: channel.name, channels: [] });
+        }
+      });
+
+      payload.channels.forEach((channel: any) => {
+        if (channel.type === 0) {
+          if (channel.parentId && categories.has(channel.parentId)) {
+            categories.get(channel.parentId)!.channels.push(channel);
+          } else {
+            uncategorized.push(channel);
+          }
+        }
+      });
+
+      categories.forEach((cat: any) => {
+        cat.channels.sort((a: any, b: any) => a.position - b.position);
+      });
+
+      const categorizedList = Array.from(categories.values());
+      if (uncategorized.length > 0) {
+        categorizedList.unshift({
+          id: 'uncategorized',
+          name: 'Text Channels',
+          channels: uncategorized.sort((a: any, b: any) => a.position - b.position)
+        });
+      }
+
+      // Format output
+      categorizedList.forEach((cat: any) => {
+        parts.push(`${cat.name}:`);
+        cat.channels.forEach((ch: any) => {
+          parts.push(`  #${ch.name}`);
+          parts.push(`    ID: ${ch.id}`);
+          if (ch.topic) parts.push(`    Topic: ${ch.topic}`);
+        });
+        parts.push('');
+      });
+
+      return [{
+        type: 'addFacet',
+        facet: {
+          id: `discord-result-channels-${payload.guildId}-${Date.now()}`,
+          type: 'state',
+          displayName: 'discord-channels-list',
+          content: parts.join('\n'),
+          scope: ['panel:discord-control'],
+          state: {
+            entityType: 'discord-result',
+            resultType: 'channels-list',
+            guildId: payload.guildId,
+            channels: payload.channels,
+            count: payload.channels.length,
+            timestamp: Date.now()
+          }
+        }
+      }];
+    }
+
+    private handleChannelJoined(payload: any): any[] {
+      if (!payload?.id) {
+        console.warn('[DiscordResultsReceptor] Invalid channel joined payload:', payload);
+        return [];
+      }
+
+      return [{
+        type: 'addFacet',
+        facet: {
+          id: `discord-joined-${payload.id}-${Date.now()}`,
+          type: 'state',
+          displayName: 'discord-channel-joined',
+          content: `Joined ${payload.guildName}:#${payload.name}`,
+          scope: ['panel:discord-control'],
+          state: {
+            entityType: 'discord-result',
+            resultType: 'channel-joined',
+            channelId: payload.id,
+            channelName: payload.name,
+            guildName: payload.guildName,
+            timestamp: Date.now(),
+            ttl: 5000
+          }
+        }
+      }];
+    }
+
+    private handleChannelLeft(payload: any): any[] {
+      if (!payload?.channelId) {
+        console.warn('[DiscordResultsReceptor] Invalid channel left payload:', payload);
+        return [];
+      }
+
+      return [{
+        type: 'addFacet',
+        facet: {
+          id: `discord-left-${payload.channelId}-${Date.now()}`,
+          type: 'state',
+          displayName: 'discord-channel-left',
+          content: `Left channel ${payload.channelId}`,
+          scope: ['panel:discord-control'],
+          state: {
+            entityType: 'discord-result',
+            resultType: 'channel-left',
+            channelId: payload.channelId,
+            timestamp: Date.now(),
+            ttl: 5000
+          }
+        }
+      }];
+    }
+  }
 
   return {
     component: DiscordControlPanelComponent,
     receptors: {
       ControlPanelActionsReceptor,
-      PanelScopeReceptor
+      PanelScopeReceptor,
+      DiscordResultsReceptor
     }
   };
 }
