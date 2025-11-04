@@ -264,6 +264,9 @@ export function createModule(env: IAxonEnvironmentV2): typeof env.ControlPanelCo
         description: 'Selects a Discord server for subsequent operations',
         params: { serverName: { type: 'string', required: true } }
       });
+
+      // Emit tools-registered event for receptors to create facets declaratively
+      await this.onMountComplete();
     }
 
     async handleEvent(event: SpaceEvent): Promise<void> {
@@ -801,5 +804,14 @@ export function createModule(env: IAxonEnvironmentV2): typeof env.ControlPanelCo
     }
   }
 
-  return DiscordControlPanelComponent;
+  // Import receptors from connectome-ts
+  const { ControlPanelActionsReceptor, PanelScopeReceptor } = env;
+
+  return {
+    component: DiscordControlPanelComponent,
+    receptors: {
+      ControlPanelActionsReceptor,
+      PanelScopeReceptor
+    }
+  };
 }
