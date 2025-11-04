@@ -449,8 +449,13 @@ export function createModule(env: IAxonEnvironmentV2): typeof env.ControlPanelCo
 
         // Result facet is now created declaratively by DiscordChannelJoinedReceptor
 
-        // Re-activate agent
-        this.reactivateAgent(`Joined channel #${payload.name}`);
+        // Only activate agent if panel is open (auto-joins during boot happen while closed)
+        if (this.isOpen) {
+          this.reactivateAgent(`Joined channel #${payload.name}`);
+          console.log(`[DiscordControlPanel] Panel open - agent activated for join`);
+        } else {
+          console.log(`[DiscordControlPanel] Panel closed - skipping agent activation (likely auto-join)`);
+        }
       } else {
         console.error(`[DiscordControlPanel] Invalid channel joined payload:`, payload);
         this.emitControlError(
@@ -547,41 +552,6 @@ export function createModule(env: IAxonEnvironmentV2): typeof env.ControlPanelCo
           }
         });
       }
-
-      return parts.join('\n');
-    }
-
-    private formatGuildsList(): string {
-      const parts: string[] = [];
-
-      this.availableGuilds.forEach((guild: any) => {
-        parts.push(`${guild.name}`);
-        parts.push(`  ID: ${guild.id}`);
-        if (guild.memberCount) {
-          parts.push(`  Members: ${guild.memberCount}`);
-        }
-        parts.push('');
-      });
-
-      return parts.join('\n');
-    }
-
-    private formatChannelsList(channels: ChannelInfo[]): string {
-      const parts: string[] = [];
-
-      const categorized = this.categorizeChannels(channels);
-      categorized.forEach((category: any) => {
-        parts.push(`${category.name}:`);
-        category.channels.forEach((channel: any) => {
-          const joined = this.joinedChannels.has(channel.id) ? ' [JOINED]' : '';
-          parts.push(`  #${channel.name}${joined}`);
-          parts.push(`    ID: ${channel.id}`);
-          if (channel.topic) {
-            parts.push(`    Topic: ${channel.topic}`);
-          }
-        });
-        parts.push('');
-      });
 
       return parts.join('\n');
     }
