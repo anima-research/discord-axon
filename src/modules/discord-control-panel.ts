@@ -4,14 +4,11 @@
  * Provides UI and actions for managing Discord server/channel connections
  */
 
-// Import shared AXON types from the centralized package
-import type { 
-  IInteractiveComponent, 
-  ISpaceEvent, 
-  IPersistentMetadata, 
-  IExternalMetadata, 
-  IAxonEnvironment 
-} from '@connectome/axon-interfaces';
+// Import types
+import type { IAxonEnvironmentV2 } from 'connectome-ts/src/axon/interfaces-v2';
+import type { IPersistentMetadata } from '@connectome/axon-interfaces';
+import type { SpaceEvent } from 'connectome-ts/src/spaces/types';
+import { ControlPanelComponent } from 'connectome-ts/src/widgets/control-panel';
 
 // Guild and channel info types
 interface GuildInfo {
@@ -39,14 +36,26 @@ interface CategoryInfo {
 }
 
 // Module factory function  
-export function createModule(env: IAxonEnvironment): typeof env.InteractiveComponent {
+export function createModule(env: IAxonEnvironmentV2): typeof ControlPanelComponent {
   const {
-    InteractiveComponent,
     persistent,
     external
   } = env;
   
-  class DiscordControlPanelComponent extends InteractiveComponent {
+  class DiscordControlPanelComponent extends ControlPanelComponent {
+    // Panel configuration
+    protected getPanelId() { return 'discord-control'; }
+    protected getPanelDisplayName() { return 'Discord Control'; }
+    
+    protected async onPanelOpened() {
+      // Optionally fetch server list when panel opens
+    }
+    
+    protected async onPanelClosed() {
+      // Cleanup if needed
+    }
+    
+    // Discord-specific state
     // Available guilds and channels
     @persistent
     private availableGuilds: GuildInfo[] = [];
@@ -61,9 +70,7 @@ export function createModule(env: IAxonEnvironment): typeof env.InteractiveCompo
     @persistent
     private selectedGuildId?: string;
     
-    // Track whether we've emitted action facets
-    @persistent
-    private hasEmittedActions: boolean = false;
+    // Panel state is now managed by ControlPanelComponent.isOpen
     
     @persistent
     private showCategories: boolean = true;
@@ -103,15 +110,16 @@ export function createModule(env: IAxonEnvironment): typeof env.InteractiveCompo
       { propertyKey: 'availableChannels' },
       { propertyKey: 'joinedChannels' },
       { propertyKey: 'selectedGuildId' },
-      { propertyKey: 'hasEmittedActions' },
       { propertyKey: 'showCategories' }
     ];
     
     async onMount(): Promise<void> {
       console.log('[DiscordControlPanel] Component mounted');
+      console.log('[DiscordControlPanel] super.onMount exists:', typeof super.onMount);
       
-      // Subscribe to frame events
-      this.element.subscribe('frame:start');
+      // Call super to register open/close actions
+      await super.onMount();
+      console.log('[DiscordControlPanel] super.onMount() completed');
       
       // Subscribe to Discord events
       this.element.subscribe('discord:connected');
@@ -120,12 +128,15 @@ export function createModule(env: IAxonEnvironment): typeof env.InteractiveCompo
       this.element.subscribe('discord:channel-joined');
       this.element.subscribe('discord:channel-left');
       
-      // Register actions
-      this.registerAction('listServers', async () => {
-        await this.listGuilds();
-      });
+      // Register panel tools (automatically scoped)
+      this.registerPanelTool(
+        'listServers',
+        async () => { await this.listGuilds(); },
+        'List Discord servers: @discord-control.listServers',
+        { description: 'Lists all Discord servers the bot has access to' }
+      );
       
-      this.registerAction('listChannels', async (params) => {
+      this.registerPanelTool('listChannels', async (params: any) => {
         const serverName = params?.serverName || this.getSelectedServerName();
         if (!serverName) {
           this.emitControlError(
@@ -147,9 +158,12 @@ export function createModule(env: IAxonEnvironment): typeof env.InteractiveCompo
         }
         
         await this.listChannels(guild.id);
+      }, 'List channels: @discord-control.listChannels(serverName="MyServer")', {
+        description: 'Lists channels in the selected or specified server',
+        params: { serverName: { type: 'string', required: false } }
       });
       
-      this.registerAction('joinChannel', async (params) => {
+      this.registerPanelTool('joinChannel', async (params: any) => {
         if (!params?.channelName) {
           this.emitControlError(
             'discord-error-no-channel',
@@ -180,9 +194,15 @@ export function createModule(env: IAxonEnvironment): typeof env.InteractiveCompo
         }
         
         await this.joinChannel(channel.id);
+      }, 'Join channel: @discord-control.joinChannel(channelName="general", serverName="MyServer")', {
+        description: 'Joins a Discord channel to receive messages',
+        params: {
+          channelName: { type: 'string', required: true },
+          serverName: { type: 'string', required: false }
+        }
       });
       
-      this.registerAction('leaveChannel', async (params) => {
+      this.registerPanelTool('leaveChannel', async (params: any) => {
         if (!params?.channelName) {
           this.emitControlError(
             'discord-error-no-channel-leave',
@@ -214,29 +234,21 @@ export function createModule(env: IAxonEnvironment): typeof env.InteractiveCompo
         }
         
         await this.leaveChannel(targetChannel.id);
+      }, 'Leave channel: @discord-control.leaveChannel(channelName="general")', {
+        description: 'Leaves a previously joined Discord channel',
+        params: {
+          channelName: { type: 'string', required: true },
+          serverName: { type: 'string', required: false }
+        }
       });
       
-      this.registerAction('showJoinedChannels', async () => {
+      this.registerPanelTool('showJoinedChannels', async () => {
         await this.showJoinedChannels();
+      }, 'Show joined channels: @discord-control.showJoinedChannels', {
+        description: 'Displays all currently joined Discord channels'
       });
       
-      this.registerAction('refreshInstructions', async () => {
-        // Force re-emission of action registrations and instructions
-        this.hasEmittedActions = false;
-        this.createControlPanelFacet();
-        this.emitActionRegistrations();
-        this.emitUsageInstructions();
-        this.hasEmittedActions = true;
-        
-        this.emitControlEvent(
-          'discord-instructions-refreshed',
-          'Discord control panel instructions have been refreshed',
-          'discord-control:info',
-          { ttl: 3000 }
-        );
-      });
-      
-      this.registerAction('selectServer', async (params) => {
+      this.registerPanelTool('selectServer', async (params: any) => {
         if (!params?.serverName) {
           this.emitControlError(
             'discord-error-no-server-select',
@@ -258,30 +270,17 @@ export function createModule(env: IAxonEnvironment): typeof env.InteractiveCompo
         
         this.selectedGuildId = guild.id;
         await this.listChannels(guild.id);
+      }, 'Select server: @discord-control.selectServer(serverName="MyServer")', {
+        description: 'Selects a Discord server for subsequent operations',
+        params: { serverName: { type: 'string', required: true } }
       });
-      
-      // Don't emit VEIL operations in onMount - wait for first frame
     }
     
-    async handleEvent(event: ISpaceEvent): Promise<void> {
+    async handleEvent(event: SpaceEvent): Promise<void> {
+      // Call parent to handle frame:start subscription
+      await super.handleEvent(event);
+      
       switch (event.topic) {
-        case 'frame:start':
-          // Ensure action registrations are available on first frame
-          // Since hasEmittedActions is persistent, this only runs once per component lifetime
-          // If you need to update instructions after code changes, reset hasEmittedActions to false
-          if (!this.hasEmittedActions) {
-            // Create initial UI facet
-            this.createControlPanelFacet();
-            
-            // Emit action registration facets
-            this.emitActionRegistrations();
-            
-            // Emit usage instructions
-            this.emitUsageInstructions();
-            
-            this.hasEmittedActions = true;
-          }
-          break;
           
         case 'discord:connected':
           // Request guild list on connection
@@ -673,162 +672,6 @@ export function createModule(env: IAxonEnvironment): typeof env.InteractiveCompo
       if (!this.selectedGuildId) return undefined;
       const guild = this.availableGuilds.find(g => g.id === this.selectedGuildId);
       return guild?.name;
-    }
-    
-    private emitActionRegistrations(): void {
-      // Emit facets for each registered action
-      // TODO: Once VEIL supports changeFacet operations, we can update facets
-      // instead of checking for existence. For now, we prevent duplicate addFacet
-      // operations by checking if the facet already exists in the current state.
-      const actions = [
-        {
-          name: 'listServers',
-          displayName: 'List Discord Servers',
-          description: 'Lists all Discord servers the bot has access to',
-          parameters: []
-        },
-        {
-          name: 'selectServer',
-          displayName: 'Select Server',
-          description: 'Selects a Discord server for subsequent operations',
-          parameters: [
-            { name: 'serverName', type: 'string', required: true, description: 'Name of the server to select' }
-          ]
-        },
-        {
-          name: 'listChannels',
-          displayName: 'List Channels',
-          description: 'Lists channels in the selected or specified server',
-          parameters: [
-            { name: 'serverName', type: 'string', required: false, description: 'Server name (uses selected server if not provided)' }
-          ]
-        },
-        {
-          name: 'joinChannel',
-          displayName: 'Join Channel',
-          description: 'Joins a Discord channel to receive messages',
-          parameters: [
-            { name: 'channelName', type: 'string', required: true, description: 'Name of the channel to join' },
-            { name: 'serverName', type: 'string', required: false, description: 'Server name (uses selected server if not provided)' }
-          ]
-        },
-        {
-          name: 'leaveChannel',
-          displayName: 'Leave Channel',
-          description: 'Leaves a previously joined Discord channel',
-          parameters: [
-            { name: 'channelName', type: 'string', required: true, description: 'Name of the channel to leave' },
-            { name: 'serverName', type: 'string', required: false, description: 'Server name (optional for disambiguation)' }
-          ]
-        },
-        {
-          name: 'showJoinedChannels',
-          displayName: 'Show Joined Channels',
-          description: 'Displays all currently joined Discord channels',
-          parameters: []
-        },
-        {
-          name: 'refreshInstructions',
-          displayName: 'Refresh Instructions',
-          description: 'Re-emits action registrations and usage instructions',
-          parameters: []
-        }
-      ];
-      
-      actions.forEach(action => {
-        const facetId = `discord-action-${action.name}`;
-        
-        // Check if facet already exists in current VEIL state
-        const veilState = this.element.space?.getVEILState?.();
-        const existingFacet = veilState?.getState()?.facets?.get(facetId);
-        
-        if (!existingFacet) {
-          this.addFacet({
-            id: facetId,
-            type: 'action-definition',
-            // No content - action-definition is metadata, not renderable
-            displayName: action.displayName,
-            attributes: {
-              agentGenerated: false,
-              toolName: action.name,
-              parameters: action.parameters.reduce((acc: any, param: any) => {
-                acc[param.name] = param.required ? `<${param.type}>` : `<${param.type}?>`;
-                return acc;
-              }, {}),
-              actionName: action.name,
-              category: 'discord-control'
-            }
-          });
-        }
-      });
-      
-      // Also emit a summary facet with all actions
-      const actionSummary = actions.map(a => {
-        const params = a.parameters.map(p => {
-          // Format parameters with quotes for strings
-          const paramFormat = p.type === 'string' ? `"${p.name}"` : p.name;
-          return p.required ? paramFormat : `${paramFormat}?`;
-        }).join(', ');
-        return `• @discord-control.${a.name}(${params}) - ${a.description}`;
-      }).join('\n');
-      
-      const summaryId = 'discord-control-actions-summary';
-      const veilState = this.element.space?.getVEILState?.();
-      if (!veilState?.getState()?.facets?.get(summaryId)) {
-        this.addFacet({
-          id: summaryId,
-          type: 'ambient',
-          displayName: 'Discord Control Actions',
-          content: `Available Discord Control Panel Actions:\n\n${actionSummary}`,
-          attributes: {
-            category: 'discord-control',
-            actionCount: actions.length
-          }
-        });
-      }
-    }
-    
-    private emitUsageInstructions(): void {
-      // Emit a comprehensive help facet
-      const instructions = `Discord Control Panel Usage Guide
-
-This component allows you to manage Discord server and channel connections.
-
-Getting Started:
-1. Use @discord-control.listServers() to see available Discord servers
-2. Use @discord-control.selectServer("Server Name") to choose a server
-3. Use @discord-control.listChannels() to see channels in the selected server
-4. Use @discord-control.joinChannel("channel-name") to start receiving messages
-
-Examples:
-- @discord-control.listServers() - Shows all available servers
-- @discord-control.selectServer("My Cool Server") - Selects a specific server
-- @discord-control.listChannels() - Lists channels in the selected server
-- @discord-control.joinChannel("general") - Joins the #general channel
-- @discord-control.joinChannel("dev-chat", "Another Server") - Joins #dev-chat in a specific server
-- @discord-control.leaveChannel("general") - Leaves the #general channel
-- @discord-control.showJoinedChannels() - Shows all active channel connections
-
-Notes:
-- Channel names are case-insensitive
-- The # prefix is optional (both "general" and "#general" work)
-- Once a server is selected, you don't need to specify it for every operation
-- Joined channels persist across frames and are shown with a ✓ mark`;
-      
-      const instructionsId = 'discord-control-instructions';
-      const veilState = this.element.space?.getVEILState?.();
-      if (!veilState?.getState()?.facets?.get(instructionsId)) {
-        this.addFacet({
-          id: instructionsId,
-          type: 'ambient',
-          displayName: 'Discord Control Panel Help',
-          content: instructions,
-          attributes: {
-            category: 'discord-control',
-            persistent: true
-          }
-        });
-      }
     }
   }
   
