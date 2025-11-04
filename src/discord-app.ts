@@ -647,13 +647,12 @@ class DiscordToolResultReceptor extends BaseReceptor {
       return deltas;
     }
 
-    // Create tool-result facet (compressed by default so it doesn't render in HUD)
+    // Create tool-result facet 
     deltas.push({
       type: 'addFacet',
       facet: {
         id: `tool-result-${toolName}-${Date.now()}`,
         type: 'tool-result',
-        compressed: true,
         displayName: `Result: ${toolName}`,
         content: JSON.stringify(resultData, null, 2),
         state: {
@@ -730,17 +729,11 @@ class DiscordConsoleTransform extends BaseTransform {
           this.processedActionIds.add(facet.id);
           this.consoleOpen = true;
 
-          // Remove old facet and add updated one (ensures HUD picks it up)
+          // Update console to open state
           deltas.push({
-            type: 'removeFacet',
-            id: 'discord-console-description'
-          });
-          deltas.push({
-            type: 'addFacet',
-            facet: {
-              id: 'discord-console-description',
-              type: 'ambient',
-              displayName: 'Discord Console',
+            type: 'rewriteFacet',
+            id: 'discord-console-description',
+            changes: {
               content: this.getOpenConsoleContent(state),
               attributes: {
                 category: 'discord-control',
@@ -748,22 +741,6 @@ class DiscordConsoleTransform extends BaseTransform {
               }
             }
           });
-
-          // Decompress tool-result facets so they're visible in HUD
-          for (const facet of state.facets.values()) {
-            if (facet.type === 'tool-result' &&
-                facet.attributes?.category === 'discord-control' &&
-                facet.compressed === true) {
-              console.log('[DiscordConsoleTransform] Decompressing tool-result facet:', facet.id);
-              deltas.push({
-                type: 'rewriteFacet',
-                id: facet.id,
-                changes: {
-                  compressed: false
-                }
-              });
-            }
-          }
 
           // Emit agent activation so agent sees the opened console
           deltas.push({
@@ -778,8 +755,7 @@ class DiscordConsoleTransform extends BaseTransform {
                 sourceAgentId: 'discord-control',
                 sourceAgentName: 'Discord Control Panel'
               },
-              ephemeral: true,
-              scope: 'global'
+              scope: ['global']
             }
           });
           console.log('[DiscordConsoleTransform] Triggered agent activation for console open');
@@ -788,17 +764,11 @@ class DiscordConsoleTransform extends BaseTransform {
           this.processedActionIds.add(facet.id);
           this.consoleOpen = false;
 
-          // Close the console immediately - remove and re-add to ensure HUD picks it up
+          // Update console to closed state
           deltas.push({
-            type: 'removeFacet',
-            id: 'discord-console-description'
-          });
-          deltas.push({
-            type: 'addFacet',
-            facet: {
-              id: 'discord-console-description',
-              type: 'ambient',
-              displayName: 'Discord Console',
+            type: 'rewriteFacet',
+            id: 'discord-console-description',
+            changes: {
               content: 'Discord management console available. Use @discord-control.open_console() to see available tools.',
               attributes: {
                 category: 'discord-control',
@@ -807,18 +777,14 @@ class DiscordConsoleTransform extends BaseTransform {
             }
           });
 
-          // Compress tool-result facets so they're hidden from HUD
+          // Remove all tool-result facets from this console session
           for (const facet of state.facets.values()) {
             if (facet.type === 'tool-result' &&
-                facet.attributes?.category === 'discord-control' &&
-                facet.compressed === false) {
-              console.log('[DiscordConsoleTransform] Compressing tool-result facet:', facet.id);
+                facet.attributes?.category === 'discord-control') {
+              console.log('[DiscordConsoleTransform] Removing tool-result facet:', facet.id);
               deltas.push({
-                type: 'rewriteFacet',
-                id: facet.id,
-                changes: {
-                  compressed: true
-                }
+                type: 'removeFacet',
+                id: facet.id
               });
             }
           }
@@ -909,8 +875,7 @@ class DiscordToolResultActivationTransform extends BaseTransform {
               sourceAgentId: 'discord-control',
               sourceAgentName: 'Discord Control Panel'
             },
-            ephemeral: true,
-            scope: 'global'
+            scope: ['global']
           }
         });
 
@@ -1472,7 +1437,7 @@ class DiscordControlEffector extends BaseEffector {
 
       // Convert snake_case to camelCase for afferent method names
       // (control panel uses snake_case, afferent uses camelCase)
-      const camelCaseAction = actionName.replace(/_([a-z])/g, (_, letter) => letter.toUpperCase());
+      const camelCaseAction = actionName.replace(/_([a-z])/g, (_: string, letter: string) => letter.toUpperCase());
 
       // Get parameters from action facet
       let parameters = action.state?.parameters || {};
