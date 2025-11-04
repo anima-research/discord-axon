@@ -647,12 +647,13 @@ class DiscordToolResultReceptor extends BaseReceptor {
       return deltas;
     }
 
-    // Create tool-result facet
+    // Create tool-result facet (compressed by default so it doesn't render in HUD)
     deltas.push({
       type: 'addFacet',
       facet: {
         id: `tool-result-${toolName}-${Date.now()}`,
         type: 'tool-result',
+        compressed: true,
         displayName: `Result: ${toolName}`,
         content: JSON.stringify(resultData, null, 2),
         state: {
@@ -748,21 +749,40 @@ class DiscordConsoleTransform extends BaseTransform {
             }
           });
 
-          // Uncompress tool-result facets so they show in HUD
-          for (const resultFacet of state.facets.values()) {
-            if (resultFacet.type === 'tool-result' &&
-                resultFacet.attributes?.category === 'discord-control' &&
-                (resultFacet as any).compressed !== false) {
+          // Decompress tool-result facets so they're visible in HUD
+          for (const facet of state.facets.values()) {
+            if (facet.type === 'tool-result' &&
+                facet.attributes?.category === 'discord-control' &&
+                facet.compressed === true) {
+              console.log('[DiscordConsoleTransform] Decompressing tool-result facet:', facet.id);
               deltas.push({
                 type: 'rewriteFacet',
-                id: resultFacet.id,
+                id: facet.id,
                 changes: {
                   compressed: false
                 }
               });
-              console.log(`[DiscordConsoleTransform] Showing tool result: ${resultFacet.id}`);
             }
           }
+
+          // Emit agent activation so agent sees the opened console
+          deltas.push({
+            type: 'addFacet',
+            facet: {
+              id: `activation-console-open-${Date.now()}`,
+              type: 'agent-activation',
+              displayName: 'Discord console opened',
+              state: {
+                reason: 'Discord console opened - viewing available tools',
+                priority: 'normal',
+                sourceAgentId: 'discord-control',
+                sourceAgentName: 'Discord Control Panel'
+              },
+              ephemeral: true,
+              scope: 'global'
+            }
+          });
+          console.log('[DiscordConsoleTransform] Triggered agent activation for console open');
         } else if (actionName === 'close_console' && this.consoleOpen) {
           console.log('[DiscordConsoleTransform] Closing console immediately (action:', facet.id, ')');
           this.processedActionIds.add(facet.id);
@@ -788,18 +808,18 @@ class DiscordConsoleTransform extends BaseTransform {
           });
 
           // Compress tool-result facets so they're hidden from HUD
-          for (const resultFacet of state.facets.values()) {
-            if (resultFacet.type === 'tool-result' &&
-                resultFacet.attributes?.category === 'discord-control' &&
-                (resultFacet as any).compressed !== true) {
+          for (const facet of state.facets.values()) {
+            if (facet.type === 'tool-result' &&
+                facet.attributes?.category === 'discord-control' &&
+                facet.compressed === false) {
+              console.log('[DiscordConsoleTransform] Compressing tool-result facet:', facet.id);
               deltas.push({
                 type: 'rewriteFacet',
-                id: resultFacet.id,
+                id: facet.id,
                 changes: {
                   compressed: true
                 }
               });
-              console.log(`[DiscordConsoleTransform] Hiding tool result: ${resultFacet.id}`);
             }
           }
         }
@@ -810,7 +830,7 @@ class DiscordConsoleTransform extends BaseTransform {
   }
 
   private getOpenConsoleContent(state: ReadonlyVEILState): string {
-    return `Discord Console [OPEN]
+    let content = `Discord Console [OPEN]
 
 The console lists available Discord management tools:
 
@@ -821,6 +841,37 @@ The console lists available Discord management tools:
 • {@discord-control.join(channelId: string)} - Join a Discord channel by ID to start receiving messages
 • {@discord-control.leave(channelId: string)} - Leave a Discord channel to stop receiving messages from it
 `;
+
+    // Include tool results in the console content
+    const toolResults: any[] = [];
+    for (const facet of state.facets.values()) {
+      if (facet.type === 'tool-result' &&
+          facet.attributes?.category === 'discord-control') {
+        toolResults.push(facet);
+      }
+    }
+
+    if (toolResults.length > 0) {
+      content += '\n📊 Recent Tool Results:\n';
+      for (const result of toolResults) {
+        const toolName = result.state?.toolName || 'unknown';
+        const timestamp = result.state?.timestamp ?
+          new Date(result.state.timestamp).toLocaleTimeString() : '';
+
+        content += `\n• ${toolName}${timestamp ? ` (${timestamp})` : ''}:\n`;
+
+        // Format the result data
+        if (result.content) {
+          // Indent the JSON content
+          const lines = result.content.split('\n');
+          for (const line of lines) {
+            content += `  ${line}\n`;
+          }
+        }
+      }
+    }
+
+    return content;
   }
 }
 
