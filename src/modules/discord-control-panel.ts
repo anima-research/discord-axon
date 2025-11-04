@@ -115,7 +115,7 @@ export function createModule(env: IAxonEnvironmentV2): typeof env.ControlPanelCo
       this.registerPanelTool(
         'listServers',
         async () => { await this.listGuilds(); },
-        'List Discord servers: @discord-control.listServers',
+        'List Discord servers: {@discord-control.listServers()}',
         { description: 'Lists all Discord servers the bot has access to' }
       );
 
@@ -141,7 +141,7 @@ export function createModule(env: IAxonEnvironmentV2): typeof env.ControlPanelCo
         }
 
         await this.listChannels(guild.id);
-      }, 'List channels: @discord-control.listChannels(serverName="MyServer")', {
+      }, 'List channels: {@discord-control.listChannels(serverName="MyServer")}', {
         description: 'Lists channels in the selected or specified server',
         params: { serverName: { type: 'string', required: false } }
       });
@@ -177,7 +177,7 @@ export function createModule(env: IAxonEnvironmentV2): typeof env.ControlPanelCo
         }
 
         await this.joinChannel(channel.id);
-      }, 'Join channel: @discord-control.joinChannel(channelName="general", serverName="MyServer")', {
+      }, 'Join channel: {@discord-control.joinChannel(channelName="general", serverName="MyServer")}', {
         description: 'Joins a Discord channel to receive messages',
         params: {
           channelName: { type: 'string', required: true },
@@ -217,7 +217,7 @@ export function createModule(env: IAxonEnvironmentV2): typeof env.ControlPanelCo
         }
 
         await this.leaveChannel(targetChannel.id);
-      }, 'Leave channel: @discord-control.leaveChannel(channelName="general")', {
+      }, 'Leave channel: {@discord-control.leaveChannel(channelName="general")}', {
         description: 'Leaves a previously joined Discord channel',
         params: {
           channelName: { type: 'string', required: true },
@@ -227,7 +227,7 @@ export function createModule(env: IAxonEnvironmentV2): typeof env.ControlPanelCo
 
       this.registerPanelTool('showJoinedChannels', async () => {
         await this.showJoinedChannels();
-      }, 'Show joined channels: @discord-control.showJoinedChannels', {
+      }, 'Show joined channels: {@discord-control.showJoinedChannels()}', {
         description: 'Displays all currently joined Discord channels'
       });
 
@@ -260,7 +260,7 @@ export function createModule(env: IAxonEnvironmentV2): typeof env.ControlPanelCo
         );
         this.createControlPanelFacet();
         await this.listChannels(guild.id);
-      }, 'Select server: @discord-control.selectServer(serverName="MyServer")', {
+      }, 'Select server: {@discord-control.selectServer(serverName="MyServer")}', {
         description: 'Selects a Discord server for subsequent operations',
         params: { serverName: { type: 'string', required: true } }
       });
