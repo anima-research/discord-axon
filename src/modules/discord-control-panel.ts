@@ -243,17 +243,60 @@ export function createModule(env: IAxonEnvironmentV2): typeof env.ControlPanelCo
         }
 
         this.selectedGuildId = guild.id;
-        this.emitControlEvent(
-          `discord-server-selected-${Date.now()}`,
-          `Selected server: ${guild.name}`,
-          'discord-control:status',
-          { ttl: 5000 }
-        );
         this.createControlPanelFacet();
         await this.listChannels(guild.id);
       }, 'Select server: {@discord-control.selectServer(serverName="MyServer")}', {
         description: 'Selects a Discord server for subsequent operations',
         params: { serverName: { type: 'string', required: true } }
+      });
+
+      this.registerPanelTool('sendMessage', async (params: any) => {
+        if (!params?.message) {
+          this.emitControlError(
+            'discord-error-no-message',
+            'No message content provided',
+            { ttl: 5000 }
+          );
+          return;
+        }
+
+        if (!params?.channelName) {
+          this.emitControlError(
+            'discord-error-no-channel-send',
+            'No channel name provided',
+            { ttl: 5000 }
+          );
+          return;
+        }
+
+        const serverName = params.serverName || this.getSelectedServerName();
+        if (!serverName) {
+          this.emitControlError(
+            'discord-error-no-server-send',
+            'No server specified. Provide serverName or select a server first.',
+            { ttl: 5000 }
+          );
+          return;
+        }
+
+        const channel = this.findChannelByName(params.channelName, serverName);
+        if (!channel) {
+          this.emitControlError(
+            'discord-error-unknown-channel-send',
+            `Channel #${params.channelName} not found in server ${serverName}`,
+            { ttl: 5000 }
+          );
+          return;
+        }
+
+        await this.sendMessage(channel.id, params.message);
+      }, 'Send message: {@discord-control.sendMessage(channelName="general", message="Hello!", serverName="MyServer")}', {
+        description: 'Sends a message to a Discord channel',
+        params: {
+          channelName: { type: 'string', required: true },
+          message: { type: 'string', required: true },
+          serverName: { type: 'string', required: false }
+        }
       });
 
       // Emit tools-registered event for receptors to create facets declaratively
@@ -375,6 +418,44 @@ export function createModule(env: IAxonEnvironmentV2): typeof env.ControlPanelCo
       // Call afferent method directly
       await (afferent as any).leave({ channelId });
       // Result arrives via discord:channel-left event
+    }
+
+    private async sendMessage(channelId: string, message: string): Promise<void> {
+      console.log(`[DiscordControlPanel] Sending message to channel ${channelId}`);
+
+      const afferent = this.getDiscordAfferent();
+      if (!afferent || typeof (afferent as any).send !== 'function') {
+        this.emitControlError(
+          'discord-not-ready-send',
+          'Discord not connected or send not available',
+          { ttl: 5000 }
+        );
+        return;
+      }
+
+      // Call afferent method directly
+      try {
+        await (afferent as any).send({ channelId, message });
+
+        // Emit success event
+        this.element.emit({
+          topic: 'discord:message-sent',
+          timestamp: Date.now(),
+          payload: {
+            channelId,
+            message,
+            success: true
+          }
+        });
+
+        this.reactivateAgent('Message sent successfully');
+      } catch (error) {
+        this.emitControlError(
+          'discord-send-error',
+          `Failed to send message: ${error instanceof Error ? error.message : String(error)}`,
+          { ttl: 5000 }
+        );
+      }
     }
 
     private async showJoinedChannels(): Promise<void> {
@@ -724,7 +805,7 @@ export function createModule(env: IAxonEnvironmentV2): typeof env.ControlPanelCo
    * Transforms all Discord result events into VEIL facets
    */
   class DiscordResultsReceptor extends BaseReceptor {
-    topics = ['discord:guilds-list', 'discord:channels-list', 'discord:channel-joined', 'discord:channel-left', 'discord:control-error'];
+    topics = ['discord:guilds-list', 'discord:channels-list', 'discord:channel-joined', 'discord:channel-left', 'discord:control-error', 'discord:message-sent'];
 
     transform(event: any): any[] {
       const payload = event.payload;
@@ -740,6 +821,8 @@ export function createModule(env: IAxonEnvironmentV2): typeof env.ControlPanelCo
           return this.handleChannelLeft(payload);
         case 'discord:control-error':
           return this.handleError(payload);
+        case 'discord:message-sent':
+          return this.handleMessageSent(payload);
         default:
           return [];
       }
@@ -922,6 +1005,32 @@ export function createModule(env: IAxonEnvironmentV2): typeof env.ControlPanelCo
             message: payload.message,
             timestamp: Date.now(),
             ttl: payload.ttl || 10000  // Errors visible for 10 seconds by default
+          }
+        }
+      }];
+    }
+
+    private handleMessageSent(payload: any): any[] {
+      if (!payload?.channelId || !payload?.message) {
+        console.warn('[DiscordResultsReceptor] Invalid message-sent payload:', payload);
+        return [];
+      }
+
+      return [{
+        type: 'addFacet',
+        facet: {
+          id: `discord-message-sent-${Date.now()}`,
+          type: 'state',
+          displayName: 'discord-message-sent',
+          content: `✓ Message sent successfully`,
+          scope: ['panel:discord-control'],
+          state: {
+            entityType: 'discord-result',
+            resultType: 'message-sent',
+            channelId: payload.channelId,
+            message: payload.message,
+            timestamp: Date.now(),
+            ttl: 5000
           }
         }
       }];
