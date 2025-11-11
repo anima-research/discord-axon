@@ -4,8 +4,12 @@
  * CLI entry point for Discord AXON Server
  */
 
+import dotenv from 'dotenv';
 import { CombinedDiscordAxonServer } from './server';
 import { loadConfig } from './config';
+
+// Load environment variables from .env file
+dotenv.config();
 
 async function main() {
   try {
