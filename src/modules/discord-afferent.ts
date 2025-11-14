@@ -104,6 +104,15 @@ export function createModule(env: IAxonEnvironmentV2): any {
       }
     }
     
+    async onMount(): Promise<void> {
+      // Subscribe to control panel request events
+      this.element.subscribe('discord:request-guilds');
+      this.element.subscribe('discord:request-channels');
+      this.element.subscribe('discord:join-channel');
+      this.element.subscribe('discord:leave-channel');
+      console.log('[DiscordAfferent] Subscribed to control panel events');
+    }
+    
     protected async onInitialize(): Promise<void> {
       console.log('[DiscordAfferent] Initializing...');
       
@@ -189,7 +198,12 @@ export function createModule(env: IAxonEnvironmentV2): any {
             channelId: command.channelId
           }));
 
+          // Clear caches when leaving - forces full sync on rejoin
           this.joinedChannelsCache = this.joinedChannelsCache.filter(id => id !== command.channelId);
+          if (command.channelId) {
+            delete this.lastReadCache[command.channelId];
+            delete this.channelNamesCache[command.channelId];
+          }
           break;
 
         case 'send':
@@ -314,6 +328,42 @@ export function createModule(env: IAxonEnvironmentV2): any {
       }
     }
     
+    async handleEvent(event: any): Promise<void> {
+      // Handle control panel requests
+      switch (event.topic) {
+        case 'discord:request-guilds':
+          console.log('[DiscordAfferent] Handling request-guilds');
+          if (this.ws) {
+            this.ws.send(JSON.stringify({ type: 'listGuilds' }));
+          } else {
+            console.warn('[DiscordAfferent] Cannot list guilds - not connected');
+          }
+          break;
+          
+        case 'discord:request-channels':
+          console.log('[DiscordAfferent] Handling request-channels');
+          if (this.ws) {
+            this.ws.send(JSON.stringify({ 
+              type: 'listChannels', 
+              guildId: event.payload?.guildId 
+            }));
+          } else {
+            console.warn('[DiscordAfferent] Cannot list channels - not connected');
+          }
+          break;
+          
+        case 'discord:join-channel':
+          console.log('[DiscordAfferent] Handling join-channel');
+          await this.join({ channelId: event.payload?.channelId });
+          break;
+          
+        case 'discord:leave-channel':
+          console.log('[DiscordAfferent] Handling leave-channel');
+          await this.leave({ channelId: event.payload?.channelId });
+          break;
+      }
+    }
+    
     private async handleMessage(msg: any): Promise<void> {
       console.log('[DiscordAfferent] Received:', msg.type);
       
@@ -432,6 +482,26 @@ export function createModule(env: IAxonEnvironmentV2): any {
 
         case 'slash-command-unregistered':
           console.log('[DiscordAfferent] Slash command unregistered:', msg.name);
+          break;
+
+        case 'guilds':
+          console.log('[DiscordAfferent] Received guilds list:', msg.guilds?.length || 0);
+          this.emit({
+            topic: 'discord:guilds-listed',
+            source: { elementId: this.element?.id || 'discord', elementPath: [] },
+            timestamp: Date.now(),
+            payload: { guilds: msg.guilds }
+          });
+          break;
+          
+        case 'channels':
+          console.log('[DiscordAfferent] Received channels list:', msg.channels?.length || 0);
+          this.emit({
+            topic: 'discord:channels-listed',
+            source: { elementId: this.element?.id || 'discord', elementPath: [] },
+            timestamp: Date.now(),
+            payload: { guildId: msg.guildId, channels: msg.channels }
+          });
           break;
 
         case 'error':

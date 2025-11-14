@@ -113,6 +113,9 @@ export function createModule(env: IAxonEnvironment): typeof env.InteractiveCompo
       // Subscribe to frame events
       this.element.subscribe('frame:start');
       
+      // Subscribe to element:action so we receive action invocations
+      this.element.subscribe('element:action');
+      
       // Subscribe to Discord events
       this.element.subscribe('discord:connected');
       this.element.subscribe('discord:guilds-listed');
@@ -150,70 +153,97 @@ export function createModule(env: IAxonEnvironment): typeof env.InteractiveCompo
       });
       
       this.registerAction('joinChannel', async (params) => {
-        if (!params?.channelName) {
+        // Support both channelId and channelName
+        let channelId: string;
+        
+        if (params?.channelId) {
+          // Direct ID provided - use it immediately
+          channelId = params.channelId;
+          console.log(`[DiscordControlPanel] Joining channel by ID: ${channelId}`);
+        } else if (params?.channelName) {
+          // Name provided - need to resolve it
+          const serverName = params.serverName || this.getSelectedServerName();
+          if (!serverName) {
+            this.emitControlError(
+              'discord-error-no-server-join',
+              'No server specified. Provide serverName or select a server first.',
+              { ttl: 5000 }
+            );
+            return;
+          }
+
+          const channel = this.findChannelByName(params.channelName, serverName);
+          if (!channel) {
+            this.emitControlError(
+              'discord-error-unknown-channel',
+              `Channel #${params.channelName} not found in server ${serverName}`,
+              { ttl: 5000 }
+            );
+            return;
+          }
+          channelId = channel.id;
+          console.log(`[DiscordControlPanel] Resolved channel name "${params.channelName}" to ID: ${channelId}`);
+        } else {
           this.emitControlError(
             'discord-error-no-channel',
-            'No channel name provided',
-            { ttl: 5000 }
-          );
-          return;
-        }
-
-        const serverName = params.serverName || this.getSelectedServerName();
-        if (!serverName) {
-          this.emitControlError(
-            'discord-error-no-server-join',
-            'No server specified. Provide serverName or select a server first.',
-            { ttl: 5000 }
-          );
-          return;
-        }
-
-        const channel = this.findChannelByName(params.channelName, serverName);
-        if (!channel) {
-          this.emitControlError(
-            'discord-error-unknown-channel',
-            `Channel #${params.channelName} not found in server ${serverName}`,
+            'No channel name or ID provided',
             { ttl: 5000 }
           );
           return;
         }
         
-        await this.joinChannel(channel.id);
+        await this.joinChannel(channelId);
       });
       
       this.registerAction('leaveChannel', async (params) => {
-        if (!params?.channelName) {
-          this.emitControlError(
-            'discord-error-no-channel-leave',
-            'No channel name provided',
-            { ttl: 5000 }
-          );
-          return;
-        }
+        // Support both channelId and channelName
+        let channelId: string;
         
-        // Find channel across all joined channels
-        let targetChannel: ChannelInfo | undefined;
-        for (const channelId of this.joinedChannels) {
-          const channel = this.findChannel(channelId);
-          if (channel && channel.name === params.channelName) {
-            if (!params.serverName || channel.guildName === params.serverName) {
-              targetChannel = channel;
-              break;
+        if (params?.channelId) {
+          // Direct ID provided - verify we're in this channel
+          if (!this.joinedChannels.has(params.channelId)) {
+            this.emitControlError(
+              'discord-error-not-in-channel',
+              `Not in channel with ID: ${params.channelId}`,
+              { ttl: 5000 }
+            );
+            return;
+          }
+          channelId = params.channelId;
+          console.log(`[DiscordControlPanel] Leaving channel by ID: ${channelId}`);
+        } else if (params?.channelName) {
+          // Name provided - need to resolve it
+          let targetChannel: ChannelInfo | undefined;
+          for (const joinedChannelId of this.joinedChannels) {
+            const channel = this.findChannel(joinedChannelId);
+            if (channel && channel.name === params.channelName) {
+              if (!params.serverName || channel.guildName === params.serverName) {
+                targetChannel = channel;
+                break;
+              }
             }
           }
-        }
-        
-        if (!targetChannel) {
+          
+          if (!targetChannel) {
+            this.emitControlError(
+              'discord-error-not-in-channel',
+              `Not in channel #${params.channelName}${params.serverName ? ` in ${params.serverName}` : ''}`,
+              { ttl: 5000 }
+            );
+            return;
+          }
+          channelId = targetChannel.id;
+          console.log(`[DiscordControlPanel] Resolved channel name "${params.channelName}" to ID: ${channelId}`);
+        } else {
           this.emitControlError(
-            'discord-error-not-in-channel',
-            `Not in channel #${params.channelName}${params.serverName ? ` in ${params.serverName}` : ''}`,
+            'discord-error-no-channel-leave',
+            'No channel name or ID provided',
             { ttl: 5000 }
           );
           return;
         }
         
-        await this.leaveChannel(targetChannel.id);
+        await this.leaveChannel(channelId);
       });
       
       this.registerAction('showJoinedChannels', async () => {
@@ -552,8 +582,8 @@ export function createModule(env: IAxonEnvironment): typeof env.InteractiveCompo
       parts.push('  • @discord-control.listServers() - List all Discord servers');
       parts.push('  • @discord-control.selectServer("serverName") - Select a server');
       parts.push('  • @discord-control.listChannels("serverName"?) - List channels in server');
-      parts.push('  • @discord-control.joinChannel("channelName", "serverName"?) - Join a channel');
-      parts.push('  • @discord-control.leaveChannel("channelName", "serverName"?) - Leave a channel');
+      parts.push('  • @discord-control.joinChannel(channelId|"channelName", "serverName"?) - Join a channel by ID or name');
+      parts.push('  • @discord-control.leaveChannel(channelId|"channelName", "serverName"?) - Leave a channel by ID or name');
       parts.push('  • @discord-control.showJoinedChannels() - Show all joined channels');
       
       return parts.join('\n');
@@ -804,15 +834,19 @@ Examples:
 - @discord-control.listServers() - Shows all available servers
 - @discord-control.selectServer("My Cool Server") - Selects a specific server
 - @discord-control.listChannels() - Lists channels in the selected server
-- @discord-control.joinChannel("general") - Joins the #general channel
+- @discord-control.joinChannel("general") - Joins the #general channel by name
+- @discord-control.joinChannel("1234567890") - Joins a channel by ID
 - @discord-control.joinChannel("dev-chat", "Another Server") - Joins #dev-chat in a specific server
-- @discord-control.leaveChannel("general") - Leaves the #general channel
+- @discord-control.leaveChannel("general") - Leaves the #general channel by name
+- @discord-control.leaveChannel("1234567890") - Leaves a channel by ID
 - @discord-control.showJoinedChannels() - Shows all active channel connections
 
 Notes:
+- Channels can be joined/left by either name or ID
 - Channel names are case-insensitive
 - The # prefix is optional (both "general" and "#general" work)
-- Once a server is selected, you don't need to specify it for every operation
+- When using channel names, provide serverName or select a server first
+- When using channel IDs, no server name is needed
 - Joined channels persist across frames and are shown with a ✓ mark`;
       
       const instructionsId = 'discord-control-instructions';
