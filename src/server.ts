@@ -622,6 +622,19 @@ class CombinedDiscordAxonServer {
         };
         console.log(`[Server] Reply detected: user ${message.author.username} replying to message ${message.reference.messageId} (author: ${replyInfo.authorId})`);
       }
+
+      // Extract attachments
+      const attachments = message.attachments.map(a => ({
+        id: a.id,
+        url: a.url,
+        proxyUrl: a.proxyURL,
+        contentType: a.contentType,
+        name: a.name,
+        description: a.description,
+        size: a.size,
+        height: a.height,
+        width: a.width
+      }));
       
       // Forward to all agents that have joined this channel
       for (const [id, connection] of this.connections) {
@@ -637,6 +650,7 @@ class CombinedDiscordAxonServer {
               content: content, // Parsed content with human-readable mentions
               rawContent: message.content, // Original content with Discord IDs
               mentions: mentions, // Structured mention metadata
+              attachments: attachments, // Attachments
               reply: replyInfo, // Reply information if this is a reply
               timestamp: message.createdAt.toISOString(),
               guildId: message.guildId,

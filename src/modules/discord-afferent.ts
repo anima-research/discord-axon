@@ -646,6 +646,7 @@ export function createModule(env: IAxonEnvironmentV2): any {
           content: msg.content, // Parsed content with human-readable mentions
           rawContent: msg.rawContent, // Original content with Discord IDs
           mentions: msg.mentions, // Structured mention metadata
+          attachments: msg.attachments, // Attachments from Discord
           timestamp: msg.timestamp,
           channelName: msg.channelName,
           guildName: msg.guildName,

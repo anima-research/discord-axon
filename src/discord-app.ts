@@ -82,7 +82,7 @@ class DiscordMessageReceptor extends BaseReceptor {
   
   transform(event: SpaceEvent, state: ReadonlyVEILState): any[] {
     const payload = event.payload as any;
-    const { channelId, channelName, author, authorId, content, rawContent, mentions, reply, messageId, streamId, streamType, isBot } = payload;
+    const { channelId, channelName, author, authorId, content, rawContent, mentions, attachments, reply, messageId, streamId, streamType, isBot } = payload;
     // Note: isHistory removed - history messages come through discord:history-sync, not discord:message
     
     // Check if we've already processed this message (de-dup against VEIL)
@@ -133,7 +133,10 @@ class DiscordMessageReceptor extends BaseReceptor {
       streamType,
       state: {
         speakerId: `discord:${authorId}`,
-        speaker: author
+        speaker: author,
+        metadata: {
+          attachments
+        }
       }
     };
     
@@ -161,6 +164,7 @@ class DiscordMessageReceptor extends BaseReceptor {
             isBot,
             rawContent, // Original content with Discord IDs
             mentions, // Structured mention metadata
+            attachments, // Attachments
             reply // Reply information if this is a reply
           }
         },
