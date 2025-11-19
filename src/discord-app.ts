@@ -686,7 +686,7 @@ class DiscordInfrastructureTransform extends BaseTransform {
     
     this.emit({
         topic: 'component:add',
-        source: this.getRef(),
+        // source: this.getRef(), // Auto-filled by Component.emit()
         timestamp: Date.now(),
         payload: {
             componentType: 'DiscordAfferent',
