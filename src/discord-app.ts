@@ -201,15 +201,17 @@ class DiscordMessageReceptor extends BaseReceptor {
                       replyingToBot ? 'bot_replied_to' : 
                       'fallback_activate';
         console.log(`[DiscordMessageReceptor] Creating agent activation (${reason}${fallbackActivate && activateMatch ? `: ${activateMatch[1]}` : ''})`);
-      deltas.push({
-        type: 'addFacet',
-        facet: {
-          id: `activation-${messageId}`,
-          type: 'agent-activation',
-          state: {
-            source: 'discord-message',
-              reason,
+        
+        // Use factory helper to ensure consistent structure
+        const { createAgentActivation } = require('connectome-ts/src/helpers/factories');
+        
+        deltas.push({
+          type: 'addFacet',
+          facet: createAgentActivation(reason, {
+            id: `activation-${messageId}`,
             priority: 'normal',
+            source: 'discord-message',
+            sourceAgentId: author.id,
             channelId,
             messageId,
             author,
@@ -221,9 +223,8 @@ class DiscordMessageReceptor extends BaseReceptor {
                 channelName
               }
             }
-            }
-        }
-      });
+          })
+        });
       } else {
         console.log(`[DiscordMessageReceptor] Skipping activation (bot not mentioned or replied to)`);
       }
