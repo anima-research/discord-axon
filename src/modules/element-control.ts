@@ -1,8 +1,8 @@
 /**
- * Element Control Panel - Allows agents to create/manage elements
+ * Element Control Panel - Allows agents to create/manage components (formerly elements)
  */
 
-import type { IInteractiveComponent, IPersistentMetadata } from '@connectome/axon-interfaces';
+import type { IPersistentMetadata } from '@connectome/axon-interfaces';
 import type { IAxonEnvironmentV2 } from 'connectome-ts/src/axon/interfaces-v2';
 
 export function createModule(env: IAxonEnvironmentV2) {
@@ -12,9 +12,9 @@ export function createModule(env: IAxonEnvironmentV2) {
     static persistentProperties: IPersistentMetadata[] = [];
     
     setupSubscriptions(): void {
-      // Subscribe to element:action events so we can handle action calls
-      this.element.subscribe('element:action');
-      console.log('[ElementControl] Subscribed to element:action');
+      // Subscribe to component:add events (replacing element:action which was generic)
+      this.subscribe('component:add');
+      console.log('[ElementControl] Subscribed to component:add');
     }
     
     onRestore(): void {
@@ -26,60 +26,48 @@ export function createModule(env: IAxonEnvironmentV2) {
     async onMount(): Promise<void> {
       // Call parent to subscribe to frame:start (if it exists)
       if (super.onMount) {
-        super.onMount();
+        await super.onMount();
       }
       
       console.log('[ElementControl] Component mounted');
       this.setupSubscriptions();
       
       // Register actions with descriptions
-      this.registerAction('createElement', async (params: any) => {
-        const { elementId, name, elementType, componentType, componentConfig } = params;
+      this.registerAction('createComponent', async (params: any) => {
+        const { componentId, componentType, config } = params;
         
-        if (!elementId || !name) {
-          console.error('[ElementControl] createElement requires elementId and name');
+        if (!componentType) {
+          console.error('[ElementControl] createComponent requires componentType');
           this.addEvent(
-            `Failed to create element: elementId and name required`,
-            'element-create-error',
-            `element-error-${Date.now()}`,
+            `Failed to create component: componentType required`,
+            'component-create-error',
+            `component-error-${Date.now()}`,
             { streamId: 'element-control' }
           );
           return;
         }
         
-        console.log(`[ElementControl] Creating element: ${name} (${elementId})`);
+        console.log(`[ElementControl] Creating component: ${componentType} (${componentId})`);
         
-        // Build components array
-        const components = [];
-        if (componentType) {
-          components.push({
-            type: componentType,
-            config: componentConfig || {}
-          });
-        }
-        
-        // Emit element:create event (parent is the Space)
-        this.element.emit({
-          topic: 'element:create',
+        // Emit component:add event
+        this.emit({
+          topic: 'component:add',
           timestamp: Date.now(),
           payload: {
-            parentId: 'root',
-            elementId,
-            name,
-            elementType: elementType || 'Element',
-            components
+            componentId,
+            componentType,
+            config: config || {}
           }
         });
         
         this.addEvent(
-          `Created element '${name}' (ID: ${elementId})`,
-          'element-created',
-          `element-created-${Date.now()}`,
+          `Created component '${componentType}' (ID: ${componentId || 'auto'})`,
+          'component-created',
+          `component-created-${Date.now()}`,
           {
             streamId: 'element-control',
-            elementId,
-            name,
-            componentCount: components.length
+            componentId,
+            componentType
           }
         );
       });
@@ -98,41 +86,34 @@ export function createModule(env: IAxonEnvironmentV2) {
           return;
         }
         
-        const elementId = `box-${boxName.toLowerCase().replace(/\s+/g, '-')}`;
+        const componentId = `box-${boxName.toLowerCase().replace(/\s+/g, '-')}`;
         
-        console.log(`[ElementControl] Creating box: ${boxName} (${elementId})`);
+        console.log(`[ElementControl] Creating box: ${boxName} (${componentId})`);
         
-        // Emit element:create for a box with AgentComponent
-        this.element.emit({
-          topic: 'element:create',
+        // Emit component:add for a box with AgentComponent
+        this.emit({
+          topic: 'component:add',
           timestamp: Date.now(),
           payload: {
-            parentId: 'root',
-            elementId,
-            name: elementId,
-            elementType: 'Element',
-            components: [
-              {
-                type: 'AgentComponent',
-                config: {
-                  agentConfig: {
-                    name: boxName,
-                    systemPrompt: `You are ${boxName}, a helpful box that can store and dispense items.`,
-                    autoActionRegistration: true
-                  }
-                }
+            componentId: `${componentId}:AgentComponent`,
+            componentType: 'AgentComponent',
+            config: {
+              agentConfig: {
+                name: boxName,
+                systemPrompt: `You are ${boxName}, a helpful box that can store and dispense items.`,
+                autoActionRegistration: true
               }
-            ]
+            }
           }
         });
         
         this.addEvent(
-          `Created box '${boxName}' (ID: ${elementId})`,
+          `Created box '${boxName}' (ID: ${componentId})`,
           'box-created',
           `box-created-${Date.now()}`,
           {
             streamId: 'element-control',
-            elementId,
+            componentId,
             boxName
           }
         );
@@ -147,39 +128,38 @@ export function createModule(env: IAxonEnvironmentV2) {
     transform(event: any, state: any): any[] {
       const payload = event.payload;
       
-      console.log('[ElementControlActionsReceptor] component:mounted event:', payload);
+      // console.log('[ElementControlActionsReceptor] component:mounted event:', payload);
       
-      // Only process when ElementControlComponent is mounted on element-control
-      if (payload.elementId !== 'element-control') return [];
+      // Only process when ElementControlComponent is mounted
       if (payload.componentType !== 'ElementControlComponent') return [];
       
       console.log('[ElementControlActionsReceptor] ✨ Creating action-definition facets for element-control!');
       
       const deltas = [];
+      const targetId = payload.componentId || 'element-control';
       
-      // Create action-definition facet for createElement
+      // Create action-definition facet for createComponent
       deltas.push({
         type: 'addFacet',
         facet: {
-          id: 'action-def-element-control-createElement',
+          id: `action-def-${targetId}-createComponent`,
           type: 'action-definition',
-          // No content - action-definition is metadata, not renderable
-          displayName: 'element-control.createElement',
+          displayName: 'element-control.createComponent',
           attributes: {
-            toolName: 'element-control.createElement',
-            actionName: 'createElement',
-            elementId: 'element-control',
-            description: 'Create a new element with custom configuration',
+            toolName: 'element-control.createComponent', // Map to this component ID?
+            // If componentId is 'element-control:ElementControlComponent', tool might be 'element-control.createComponent'
+            // ActionEffector uses prefix matching so 'element-control' prefix matches 'element-control:ElementControlComponent'
+            actionName: 'createComponent',
+            elementId: 'element-control', // Logical ID for grouping
+            description: 'Create a new component with custom configuration',
             parameters: {
               type: 'object',
               properties: {
-                elementId: { type: 'string', description: 'Unique ID for the element' },
-                name: { type: 'string', description: 'Display name for the element' },
-                elementType: { type: 'string', description: 'Type of element (default: Element)' },
-                componentType: { type: 'string', description: 'Component to add to the element' },
-                componentConfig: { type: 'object', description: 'Configuration for the component' }
+                componentId: { type: 'string', description: 'Unique ID for the component' },
+                componentType: { type: 'string', description: 'Type of component to create' },
+                config: { type: 'object', description: 'Configuration for the component' }
               },
-              required: ['elementId', 'name']
+              required: ['componentType']
             }
           }
         }
@@ -189,15 +169,14 @@ export function createModule(env: IAxonEnvironmentV2) {
       deltas.push({
         type: 'addFacet',
         facet: {
-          id: 'action-def-element-control-createBox',
+          id: `action-def-${targetId}-createBox`,
           type: 'action-definition',
-          // No content - action-definition is metadata, not renderable
           displayName: 'element-control.createBox',
           attributes: {
             toolName: 'element-control.createBox',
             actionName: 'createBox',
             elementId: 'element-control',
-            description: 'Create a new box element with the given name',
+            description: 'Create a new box agent with the given name',
             parameters: {
               type: 'object',
               properties: {
@@ -220,4 +199,3 @@ export function createModule(env: IAxonEnvironmentV2) {
     }
   };
 }
-
