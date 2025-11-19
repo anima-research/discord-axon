@@ -780,12 +780,45 @@ export function createModule(env: IAxonEnvironmentV2): typeof env.ControlPanelCo
      * Get Discord afferent component (finds Discord element if needed)
      */
     private getDiscordAfferent(): any {
+      const space = this.element.findSpace();
+      if (!space) {
+        console.error('[DiscordControlPanel] No space found');
+        return null;
+      }
+
+      // FLEX Phase 1: Check direct components on Space (for flattened structure)
+      if ((space as any).getComponentById) {
+         // Try known IDs for DiscordAfferent
+         const directIds = ['discord:DiscordAfferent', 'root:DiscordAfferent'];
+         for (const id of directIds) {
+            const comp = (space as any).getComponentById(id);
+            if (comp && typeof (comp as any).listGuilds === 'function') {
+               // console.log(`[DiscordControlPanel] Found DiscordAfferent via direct lookup: ${id}`);
+               return comp;
+            }
+         }
+         
+         // Scan all components if direct lookup failed
+         if ((space as any).components) {
+             const comp = (space as any).components.find((c: any) => 
+               c.constructor.name === 'DiscordAfferent' || 
+               typeof (c as any).listGuilds === 'function'
+             );
+             if (comp) {
+                 // console.log(`[DiscordControlPanel] Found DiscordAfferent via scan of space components`);
+                 return comp;
+             }
+         }
+      }
+
+      // LEGACY PATH: Tree traversal
       if (!this.discordElement) {
         this.findDiscordElement();
       }
 
       if (!this.discordElement) {
-        console.error('[DiscordControlPanel] Discord element not available');
+        // Only log error if we also failed direct lookup
+        console.error('[DiscordControlPanel] Discord element not available (and direct lookup failed)');
         return null;
       }
 
@@ -797,7 +830,7 @@ export function createModule(env: IAxonEnvironmentV2): typeof env.ControlPanelCo
         }
       }
 
-      console.error('[DiscordControlPanel] Discord afferent not found');
+      console.error('[DiscordControlPanel] Discord afferent not found on element');
       return null;
     }
 

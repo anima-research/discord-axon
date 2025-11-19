@@ -657,31 +657,38 @@ class DiscordInfrastructureTransform extends BaseTransform {
       return [];
     }
 
-    // Check element-tree facets for root components
-    const rootTreeFacet = state.facets.get('element-tree-root');
-    if (!rootTreeFacet) return [];
+    // FLEX Phase 1: Check directly mounted components on Space instead of element-tree facets
+    const space = this.element?.findSpace();
+    if (!space) {
+      console.log('[DiscordInfrastructure] Space not available yet...');
+      return [];
+    }
 
-    const components = rootTreeFacet.state?.components || [];
-    const mountedTypes = new Set(components.map((c: any) => c.type));
+    // Get all components (now in flat list)
+    const components = space.components || [];
+    const mountedTypes = new Set(components.map((c: any) => c.constructor.name));
 
     // Check if all required components are present
     const allReady = [...this.requiredComponents].every(type => mountedTypes.has(type));
 
-    if (!allReady) return [];
+    if (!allReady) {
+      console.log('[DiscordInfrastructure] Waiting for components... Have:', Array.from(mountedTypes), 'Need:', Array.from(this.requiredComponents));
+      return [];
+    }
 
-    // Check if Discord element already exists (idempotent)
-    const discordTreeFacet = state.facets.get('element-tree-discord');
-    if (discordTreeFacet) {
-      console.log('[DiscordInfrastructure] Discord element already exists, skipping creation');
+    // FLEX Phase 1: Check if DiscordAfferent already mounted (idempotent)
+    const hasDiscordAfferent = components.some((c: any) => c.constructor.name === 'DiscordAfferent');
+    if (hasDiscordAfferent) {
+      console.log('[DiscordInfrastructure] DiscordAfferent already exists, skipping creation');
       this.hasTriggered = true;
       return [];
     }
 
-    console.log('[DiscordInfrastructure] All components ready - creating Discord element');
+    console.log('[DiscordInfrastructure] All components ready - creating DiscordAfferent via element:create (will be shimmed)');
     this.hasTriggered = true;
 
-    // Directly create element-tree facet for Discord afferent
-    // This is the declarative way - the facet IS the declaration
+    // Create element:create event - this will be shimmed to direct component mounting
+    // The ElementTreeMaintainer will intercept this and mount DiscordAfferent directly to Space
     return [{
       type: 'addFacet',
       facet: {
@@ -720,95 +727,75 @@ class DiscordInfrastructureTransform extends BaseTransform {
  */
 class DiscordAutoJoinEffector extends BaseEffector {
   facetFilters = [{ type: 'event' }];
-  
-  private discordElement?: Element;
+
+  private discordAfferent?: any; // FLEX Phase 1: Direct component reference
   private channels: string[] = [];
-  
+
   async onMount(): Promise<void> {
-    // Config properties are set via Object.assign, read them directly
+    // FLEX Phase 1: Find DiscordAfferent component directly in flat list
     const space = this.element?.findSpace();
-    const discordElementId = (this as any).discordElementId;
-    
-    // channels is already set by Object.assign, but log for debugging
-    console.log(`[DiscordAutoJoinEffector] onMount - properties:`, { discordElementId, channels: this.channels });
-    console.log(`[DiscordAutoJoinEffector] Space children:`, space?.children.map(c => `${c.name}(${c.id})`));
-    
-    if (discordElementId && space) {
-      this.discordElement = space.children.find(c => c.id === discordElementId);
-      console.log(`[DiscordAutoJoinEffector] Found by ID '${discordElementId}':`, !!this.discordElement);
-    }
-    
-    if (!this.discordElement) {
-      console.warn('[DiscordAutoJoinEffector] Discord element not found by ID, searching by name');
-      this.discordElement = space?.children.find(c => c.name === 'discord');
-      console.log(`[DiscordAutoJoinEffector] Found by name 'discord':`, !!this.discordElement);
+
+    if (space) {
+      this.discordAfferent = space.components.find((c: any) =>
+        c.constructor.name === 'DiscordAfferent'
+      );
+      console.log(`[DiscordAutoJoinEffector] Found DiscordAfferent:`, !!this.discordAfferent);
     }
   }
-  
+
   async process(changes: FacetDelta[], state: ReadonlyVEILState): Promise<EffectorResult> {
     const events: SpaceEvent[] = [];
 
-    // Lazy lookup: Try to find Discord element if we don't have it yet
-    if (!this.discordElement) {
+    // Lazy lookup: Try to find DiscordAfferent if we don't have it yet
+    if (!this.discordAfferent) {
       const space = this.element?.findSpace();
-      const discordElementId = (this as any).discordElementId;
-
-      if (discordElementId && space) {
-        this.discordElement = space.children.find(c => c.id === discordElementId);
-      }
-
-      if (!this.discordElement && space) {
-        this.discordElement = space.children.find(c => c.name === 'discord');
-      }
-
-      if (this.discordElement) {
-        console.log('[DiscordAutoJoinEffector] Found Discord element on lazy lookup');
+      if (space) {
+        this.discordAfferent = space.components.find((c: any) =>
+          c.constructor.name === 'DiscordAfferent'
+        );
+        if (this.discordAfferent) {
+          console.log('[DiscordAutoJoinEffector] Found DiscordAfferent on lazy lookup');
+        }
       }
     }
 
     // Skip if not configured yet
-    if (!this.discordElement || !this.channels || this.channels.length === 0) {
+    if (!this.discordAfferent || !this.channels || this.channels.length === 0) {
       return { events };
     }
-    
+
     // Check if we have a discord:connected facet
     const hasConnected = changes.some(
-      c => c.type === 'added' && c.facet.type === 'event' && 
+      c => c.type === 'added' && c.facet.type === 'event' &&
       (c.facet as any).state?.eventType === 'discord-connected'
     );
-    
+
     if (!hasConnected) {
       return { events };
     }
-    
+
     console.log('🤖 Discord connected! Auto-joining channels:', this.channels);
-    
-    // Call join on the Discord afferent
+
+    // Call join directly on the DiscordAfferent component
     for (const channelId of this.channels) {
       console.log(`📢 Calling join for channel: ${channelId}`);
-      
-      // Find the Discord afferent (or component) and call join
-      const components = this.discordElement.components as any[];
-      for (const comp of components) {
-        if (comp.join && typeof comp.join === 'function') {
-          try {
-            await comp.join({ channelId });
-          } catch (error) {
-            console.error(`Failed to join channel ${channelId}:`, error);
-          }
-          break;
-        } else if (comp.actions && comp.actions.has('join')) {
-          try {
-            const handler = comp.actions.get('join');
-            await handler({ channelId });
-          } catch (error) {
-            console.error(`Failed to join channel ${channelId}:`, error);
-          }
-          break;
+
+      if (this.discordAfferent.join && typeof this.discordAfferent.join === 'function') {
+        try {
+          await this.discordAfferent.join({ channelId });
+        } catch (error) {
+          console.error(`Failed to join channel ${channelId}:`, error);
+        }
+      } else if (this.discordAfferent.actions && this.discordAfferent.actions.has('join')) {
+        try {
+          const handler = this.discordAfferent.actions.get('join');
+          await handler({ channelId });
+        } catch (error) {
+          console.error(`Failed to join channel ${channelId}:`, error);
         }
       }
     }
-    
+
     return { events };
   }
 }
@@ -819,80 +806,51 @@ class DiscordAutoJoinEffector extends BaseEffector {
 class DiscordTypingEffector extends BaseEffector {
   facetFilters = [{ type: 'agent-activation' }];
 
-  private discordElement?: Element;
+  private discordAfferent?: any; // FLEX Phase 1: Direct component reference
 
   async onMount(): Promise<void> {
-    // Get discord element from Space (injected via config.discordElementId)
+    // FLEX Phase 1: Find DiscordAfferent component directly
     const space = this.element?.findSpace();
-    const config = (this as any).config || {};
-    const discordElementId = config.discordElementId;
-
-    if (discordElementId && space) {
-      this.discordElement = space.children.find(c => c.id === discordElementId);
-    }
-
-    if (!this.discordElement) {
-      console.warn('[DiscordTypingEffector] Discord element not found, will search by name');
-      this.discordElement = space?.children.find(c => c.name === 'discord');
+    if (space) {
+      this.discordAfferent = space.components.find((c: any) =>
+        c.constructor.name === 'DiscordAfferent'
+      );
     }
   }
 
   async process(changes: FacetDelta[], state: ReadonlyVEILState): Promise<EffectorResult> {
     const events: SpaceEvent[] = [];
 
-    // Lazy lookup: Try to find Discord element if we don't have it yet
-    if (!this.discordElement) {
+    // Lazy lookup
+    if (!this.discordAfferent) {
       const space = this.element?.findSpace();
-      const config = (this as any).config || {};
-      const discordElementId = config.discordElementId;
-
-      if (discordElementId && space) {
-        this.discordElement = space.children.find(c => c.id === discordElementId);
-      }
-
-      if (!this.discordElement && space) {
-        this.discordElement = space.children.find(c => c.name === 'discord');
-      }
-
-      if (this.discordElement) {
-        console.log('[DiscordTypingEffector] Found Discord element on lazy lookup');
+      if (space) {
+        this.discordAfferent = space.components.find((c: any) =>
+          c.constructor.name === 'DiscordAfferent'
+        );
       }
     }
 
     for (const change of changes) {
-      // Send typing when agent activates
       if (change.type !== 'added' || change.facet.type !== 'agent-activation') continue;
 
       const activation = change.facet as any;
       const channelId = activation.state?.channelId || activation.state?.metadata?.channelId;
 
-      if (!channelId) {
-        console.log('[DiscordTypingEffector] Skipping activation without channelId');
-        continue;
-      }
+      if (!channelId) continue;
 
       console.log(`[DiscordTypingEffector] Sending typing indicator to channel: ${channelId}`);
 
-      // Call sendTyping on the Discord afferent
-      if (!this.discordElement) {
-        console.error('[DiscordTypingEffector] Discord element not available');
-        continue;
-      }
-
-      const components = this.discordElement.components as any[];
-      for (const comp of components) {
-        if (comp.sendTyping && typeof comp.sendTyping === 'function') {
-          try {
-            await comp.sendTyping({ channelId });
-            console.log(`[DiscordTypingEffector] Successfully sent typing indicator`);
-          } catch (error) {
-            console.error(`Failed to send typing indicator:`, error);
-          }
-          break;
+      // Call sendTyping directly on DiscordAfferent
+      if (this.discordAfferent?.sendTyping) {
+        try {
+          await this.discordAfferent.sendTyping({ channelId });
+        } catch (error) {
+          console.error(`Failed to send typing indicator:`, error);
         }
       }
     }
-    
+
     return { events };
   }
 }
@@ -902,44 +860,34 @@ class DiscordTypingEffector extends BaseEffector {
  */
 class DiscordSpeechEffector extends BaseEffector {
   facetFilters = [{ type: 'speech' }];
-  
-  private discordElement?: Element;
-  
+
+  private discordAfferent?: any; // FLEX Phase 1: Direct component reference
+
   async onMount(): Promise<void> {
-    // Get discord element from Space (injected via config.discordElementId)
+    // FLEX Phase 1: Find DiscordAfferent component directly in flat list
     const space = this.element?.findSpace();
-    const config = (this as any).config || {};
-    const discordElementId = config.discordElementId;
-    
-    if (discordElementId && space) {
-      this.discordElement = space.children.find(c => c.id === discordElementId);
-    }
-    
-    if (!this.discordElement) {
-      console.warn('[DiscordSpeechEffector] Discord element not found, will search by name');
-      this.discordElement = space?.children.find(c => c.name === 'discord');
+
+    if (space) {
+      this.discordAfferent = space.components.find((c: any) =>
+        c.constructor.name === 'DiscordAfferent'
+      );
+      console.log(`[DiscordSpeechEffector] Found DiscordAfferent:`, !!this.discordAfferent);
     }
   }
-  
+
   async process(changes: FacetDelta[], state: ReadonlyVEILState): Promise<EffectorResult> {
     const events: SpaceEvent[] = [];
 
-    // Lazy lookup: Try to find Discord element if we don't have it yet
-    if (!this.discordElement) {
+    // Lazy lookup: Try to find DiscordAfferent if we don't have it yet
+    if (!this.discordAfferent) {
       const space = this.element?.findSpace();
-      const config = (this as any).config || {};
-      const discordElementId = config.discordElementId;
-
-      if (discordElementId && space) {
-        this.discordElement = space.children.find(c => c.id === discordElementId);
-      }
-
-      if (!this.discordElement && space) {
-        this.discordElement = space.children.find(c => c.name === 'discord');
-      }
-
-      if (this.discordElement) {
-        console.log('[DiscordSpeechEffector] Found Discord element on lazy lookup');
+      if (space) {
+        this.discordAfferent = space.components.find((c: any) =>
+          c.constructor.name === 'DiscordAfferent'
+        );
+        if (this.discordAfferent) {
+          console.log('[DiscordSpeechEffector] Found DiscordAfferent on lazy lookup');
+        }
       }
     }
     
@@ -995,31 +943,29 @@ class DiscordSpeechEffector extends BaseEffector {
       }
       
       console.log(`[DiscordSpeechEffector] Sending to channel ${channelId}: "${content}"`);
-      
-      // Call send on the Discord afferent
-      if (!this.discordElement) {
-        console.error('[DiscordSpeechEffector] Discord element not available (even after lazy lookup)');
+
+      // Call send directly on DiscordAfferent
+      if (!this.discordAfferent) {
+        console.error('[DiscordSpeechEffector] DiscordAfferent not available (even after lazy lookup)');
         continue;
       }
-      const components = this.discordElement.components as any[];
-      for (const comp of components) {
-        if (comp.send && typeof comp.send === 'function') {
-          try {
-            await comp.send(sendParams);
-            console.log(`[DiscordSpeechEffector] Successfully sent message`);
-          } catch (error) {
-            console.error(`Failed to send to Discord:`, error);
-          }
-          break;
-        } else if (comp.actions && comp.actions.has('send')) {
-          try {
-            const handler = comp.actions.get('send');
-            await handler(sendParams);
-            console.log(`[DiscordSpeechEffector] Successfully sent message`);
-          } catch (error) {
-            console.error(`Failed to send to Discord:`, error);
-          }
-          break;
+
+      // Try send method first
+      if (this.discordAfferent.send && typeof this.discordAfferent.send === 'function') {
+        try {
+          await this.discordAfferent.send(sendParams);
+          console.log(`[DiscordSpeechEffector] Successfully sent message`);
+        } catch (error) {
+          console.error(`Failed to send to Discord:`, error);
+        }
+      } else if (this.discordAfferent.actions && this.discordAfferent.actions.has('send')) {
+        // Fallback to actions map
+        try {
+          const handler = this.discordAfferent.actions.get('send');
+          await handler(sendParams);
+          console.log(`[DiscordSpeechEffector] Successfully sent message`);
+        } catch (error) {
+          console.error(`Failed to send to Discord:`, error);
         }
       }
     }
@@ -1326,11 +1272,12 @@ export class DiscordApplication implements ConnectomeApplication {
     await new Promise(resolve => setTimeout(resolve, 100));
 
     console.log('✅ Infrastructure components added - Discord element will be created when ready');
-    
-    // Create agent element declaratively via VEIL (only if it doesn't exist)
-    let agentElem = space.children.find((child) => child.name === 'discord-agent');
-    
-    if (!agentElem) {
+
+    // FLEX Phase 1: Check for directly mounted components instead of child elements
+    // Since element:create is shimmed to component mounting, we check for component existence
+    let existingAgentComponent = (space as any).getComponentById?.('discord-agent:AgentComponent');
+
+    if (!existingAgentComponent) {
       console.log('🆕 Creating agent element via element:create event');
       
         const agentConfig = {
@@ -1357,22 +1304,21 @@ export class DiscordApplication implements ConnectomeApplication {
         }
       });
       
-      // Wait for element to be created
+      // Wait for component to be mounted
       await new Promise(resolve => setTimeout(resolve, 100));
-      
-      // Find the created element
-      agentElem = space.children.find((child) => child.name === 'discord-agent');
+
+      console.log('✅ Agent component created via shimming');
     } else {
-      console.log('✅ Found existing agent element from persistence');
+      console.log('✅ Found existing agent component from persistence');
     }
     
     // Subscribe to agent response events
     space.subscribe('agent:frame-ready');
-    
-    // Create Box Dispenser element for testing dynamic element persistence
-    let boxElement = space.children.find((child) => child.name === 'box-dispenser');
-    
-    if (!boxElement) {
+
+    // FLEX Phase 1: Check for box-dispenser component
+    let existingBoxComponent = (space as any).getComponentById?.('box-dispenser:AgentComponent');
+
+    if (!existingBoxComponent) {
       console.log('📦 Creating Box Dispenser element via element:create event');
       
       const boxAgentConfig = {
@@ -1399,18 +1345,18 @@ export class DiscordApplication implements ConnectomeApplication {
         }
       });
       
-      // Wait for element to be created
+      // Wait for component to be mounted
       await new Promise(resolve => setTimeout(resolve, 100));
-      
-      console.log('✅ Box Dispenser element created dynamically');
+
+      console.log('✅ Box Dispenser component created via shimming');
     } else {
-      console.log('✅ Found existing Box Dispenser from persistence');
+      console.log('✅ Found existing Box Dispenser component from persistence');
     }
-    
-    // Create Discord control panel declaratively (only if it doesn't exist)
-    let controlElement = space.children.find((child) => child.name === 'discord-control');
-    
-    if (!controlElement) {
+
+    // FLEX Phase 1: Check for discord-control component
+    let existingControlComponent = (space as any).getComponentById?.('discord-control:DiscordControlPanelComponent');
+
+    if (!existingControlComponent) {
       console.log('📋 Creating Discord control panel via element:create event');
       
       space.emit({
@@ -1436,16 +1382,16 @@ export class DiscordApplication implements ConnectomeApplication {
         }
       });
       
-      // Wait for element to be created
+      // Wait for component to be mounted
       await new Promise(resolve => setTimeout(resolve, 100));
     } else {
-      console.log('✅ Found existing Discord control panel from persistence');
+      console.log('✅ Found existing Discord control panel component from persistence');
     }
-    
-    // Create Element control panel for agents to create elements/boxes
-    let elementControlElement = space.children.find((child) => child.name === 'element-control');
-    
-    if (!elementControlElement) {
+
+    // FLEX Phase 1: Check for element-control component
+    let existingElementControlComponent = (space as any).getComponentById?.('element-control:ElementControlComponent');
+
+    if (!existingElementControlComponent) {
       console.log('🎮 Creating Element control panel via element:create event');
       
       space.emit({
