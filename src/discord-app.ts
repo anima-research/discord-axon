@@ -1091,8 +1091,9 @@ export class DiscordApplication implements ConnectomeApplication {
     this.getComponentRegistry();
 
     // Add ComponentManager first - handles component:add events
-    console.log('🔧 Adding ComponentManager...');
-    space.addComponent(new ComponentManager(), 'ComponentManager');
+    // console.log('🔧 Adding ComponentManager...');
+    // space.addComponent(new ComponentManager(), 'ComponentManager');
+    console.log('🔧 ComponentManager should be provided by Host');
 
     const botToken = (this.config as any).botToken || '';
         const modulePort = this.config.discord.modulePort || 8080;
