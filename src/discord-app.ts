@@ -1118,6 +1118,7 @@ export class DiscordApplication implements ConnectomeApplication {
       timestamp: Date.now(),
       payload: {
         componentType: 'DiscordInfrastructureTransform',
+        componentId: 'discord:DiscordInfrastructureTransform',
         config: { discordConfig }
       }
     });
@@ -1141,6 +1142,7 @@ export class DiscordApplication implements ConnectomeApplication {
         timestamp: Date.now(),
         payload: {
           componentType: type,
+          componentId: `discord:${type}`,
           config: {}
         }
       });
@@ -1153,6 +1155,7 @@ export class DiscordApplication implements ConnectomeApplication {
       timestamp: Date.now(),
       payload: {
         componentType: 'DiscordSpeechEffector',
+        componentId: 'discord:DiscordSpeechEffector',
         config: {}
       }
     });
@@ -1165,6 +1168,7 @@ export class DiscordApplication implements ConnectomeApplication {
       timestamp: Date.now(),
       payload: {
         componentType: 'DiscordTypingEffector',
+        componentId: 'discord:DiscordTypingEffector',
         config: {}
       }
     });
@@ -1177,6 +1181,7 @@ export class DiscordApplication implements ConnectomeApplication {
         timestamp: Date.now(),
         payload: {
           componentType: 'DiscordAutoJoinEffector',
+          componentId: 'discord:DiscordAutoJoinEffector',
           config: {
             channels: this.config.discord.autoJoinChannels
           }
@@ -1191,6 +1196,7 @@ export class DiscordApplication implements ConnectomeApplication {
       timestamp: Date.now(),
       payload: {
         componentType: 'AgentEffector',
+        componentId: 'discord:AgentEffector',
         config: { agentElementId: 'discord-agent' } // Legacy config, but still used for ID lookup
       }
     });
@@ -1201,6 +1207,7 @@ export class DiscordApplication implements ConnectomeApplication {
       timestamp: Date.now(),
       payload: {
         componentType: 'ActionEffector',
+        componentId: 'discord:ActionEffector',
         config: {}
       }
     });
@@ -1211,6 +1218,7 @@ export class DiscordApplication implements ConnectomeApplication {
       timestamp: Date.now(),
       payload: {
         componentType: 'ContextTransform',
+        componentId: 'discord:ContextTransform',
         config: {}
       }
     });
