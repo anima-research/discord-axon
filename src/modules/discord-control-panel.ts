@@ -64,9 +64,9 @@ export function createModule(env: IAxonEnvironmentV2): typeof env.ControlPanelCo
     @persistent
     private showCategories: boolean = true;
 
-    // Discord element reference (lazy loaded)
-    private discordElement?: any;
-    private discordElementId?: string;
+    // Discord component reference (lazy loaded)
+    private discordComponent?: any;
+    private discordComponentId?: string;
 
     // Static metadata for persistence
     static persistentProperties: IPersistentMetadata[] = [
@@ -96,11 +96,11 @@ export function createModule(env: IAxonEnvironmentV2): typeof env.ControlPanelCo
       console.log('[DiscordControlPanel] super.onMount() completed');
 
       // Subscribe to Discord events (results come back as events)
-      this.element.subscribe('discord:connected');
-      this.element.subscribe('discord:guilds-list');
-      this.element.subscribe('discord:channels-list');
-      this.element.subscribe('discord:channel-joined');
-      this.element.subscribe('discord:channel-left');
+      this.subscribe('discord:connected');
+      this.subscribe('discord:guilds-list');
+      this.subscribe('discord:channels-list');
+      this.subscribe('discord:channel-joined');
+      this.subscribe('discord:channel-left');
 
       // Register panel tools (automatically scoped)
       this.registerPanelTool(
@@ -467,7 +467,7 @@ export function createModule(env: IAxonEnvironmentV2): typeof env.ControlPanelCo
         await (afferent as any).send({ channelId, message });
 
         // Emit success event
-        this.element.emit({
+        this.emit({
           topic: 'discord:message-sent',
           timestamp: Date.now(),
           payload: {
@@ -504,7 +504,7 @@ export function createModule(env: IAxonEnvironmentV2): typeof env.ControlPanelCo
         scope: [this.getPanelScope()],
         attributes: {
           entityType: 'component',
-          entityId: this.element.id,
+          entityId: this.id,
           channels: Array.from(this.joinedChannels),
           count: this.joinedChannels.size
         }
@@ -752,52 +752,26 @@ export function createModule(env: IAxonEnvironmentV2): typeof env.ControlPanelCo
     // ============================================
 
     /**
-     * Lazy-load Discord element if needed
-     */
-    private findDiscordElement(): void {
-      const space = this.element.findSpace();
-      if (!space) return;
-
-      // Try by ID first (if configured)
-      if (this.discordElementId) {
-        this.discordElement = space.children.find((c: any) => c.id === this.discordElementId);
-        if (this.discordElement) {
-          console.log('[DiscordControlPanel] Found Discord element by ID:', this.discordElementId);
-          return;
-        }
-      }
-
-      // Fallback: find by name
-      this.discordElement = space.children.find((c: any) => c.name === 'discord');
-      if (this.discordElement) {
-        console.log('[DiscordControlPanel] Found Discord element by name');
-      } else {
-        console.warn('[DiscordControlPanel] Discord element not found');
-      }
-    }
-
-    /**
-     * Get Discord afferent component (finds Discord element if needed)
+     * Get Discord afferent component
      */
     private getDiscordAfferent(): any {
-      if (!this.discordElement) {
-        this.findDiscordElement();
-      }
-
-      if (!this.discordElement) {
-        console.error('[DiscordControlPanel] Discord element not available');
+      const space = this.space;
+      if (!space) {
+        console.error('[DiscordControlPanel] No space found');
         return null;
       }
 
-      // Find afferent component
-      const components = this.discordElement.components as any[];
-      for (const comp of components) {
-        if (typeof (comp as any).listGuilds === 'function') {
-          return comp;
-        }
+      // Find by capability (duck typing) or class name
+      const afferent = space.components.find((c: any) => 
+        c.constructor.name === 'DiscordAfferent' || 
+        (typeof c.listGuilds === 'function' && typeof c.join === 'function')
+      );
+
+      if (afferent) {
+        return afferent;
       }
 
-      console.error('[DiscordControlPanel] Discord afferent not found');
+      console.error('[DiscordControlPanel] Discord afferent not found in Space');
       return null;
     }
 
@@ -807,7 +781,7 @@ export function createModule(env: IAxonEnvironmentV2): typeof env.ControlPanelCo
       metadata: Record<string, any> = {}
     ): void {
       // Emit error event - will be transformed to facet by receptor
-      this.element.emit({
+      this.emit({
         topic: 'discord:control-error',
         timestamp: Date.now(),
         payload: {
