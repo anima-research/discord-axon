@@ -797,37 +797,51 @@ export function createModule(env: IAxonEnvironmentV2): typeof env.ControlPanelCo
     }
   }
 
-  // Import base receptors from connectome-ts
-  const { ControlPanelActionsReceptor, PanelScopeReceptor, BaseReceptor } = env;
+  // Import base components from connectome-ts
+  const { ControlPanelActionsReceptor, PanelScopeReceptor, Component } = env;
 
   // ============================================
-  // Discord Results Receptor (Unified)
+  // Discord Results Receptor (Unified) - FLEX Component
   // ============================================
 
   /**
    * Transforms all Discord result events into VEIL facets
+   * FLEX Component with priority 100 (Receptor level)
    */
-  class DiscordResultsReceptor extends BaseReceptor {
+  class DiscordResultsReceptor extends Component {
+    priority = 100;
     topics = ['discord:guilds-list', 'discord:channels-list', 'discord:channel-joined', 'discord:channel-left', 'discord:control-error', 'discord:message-sent'];
 
-    transform(event: any): any[] {
+    execute(context: any): void {
+      const { event } = context;
+      if (!event || !this.topics.includes(event.topic)) return;
+
       const payload = event.payload;
+      let deltas: any[] = [];
 
       switch (event.topic) {
         case 'discord:guilds-list':
-          return this.handleGuildsList(payload);
+          deltas = this.handleGuildsList(payload);
+          break;
         case 'discord:channels-list':
-          return this.handleChannelsList(payload);
+          deltas = this.handleChannelsList(payload);
+          break;
         case 'discord:channel-joined':
-          return this.handleChannelJoined(payload);
+          deltas = this.handleChannelJoined(payload);
+          break;
         case 'discord:channel-left':
-          return this.handleChannelLeft(payload);
+          deltas = this.handleChannelLeft(payload);
+          break;
         case 'discord:control-error':
-          return this.handleError(payload);
+          deltas = this.handleError(payload);
+          break;
         case 'discord:message-sent':
-          return this.handleMessageSent(payload);
-        default:
-          return [];
+          deltas = this.handleMessageSent(payload);
+          break;
+      }
+
+      for (const delta of deltas) {
+        (this as any).addOperation(delta);
       }
     }
 

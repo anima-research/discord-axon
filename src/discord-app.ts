@@ -1,22 +1,22 @@
 /**
  * Discord Application for Connectome
+ *
+ * FLEX Architecture - All components extend Component directly with explicit priorities.
  */
 
 import { ConnectomeApplication } from 'connectome-ts/src/host/types';
 import { Space } from 'connectome-ts/src/spaces/space';
 import { VEILStateManager } from 'connectome-ts/src/veil/veil-state';
 import { ComponentRegistry } from 'connectome-ts/src/persistence/component-registry';
-import { BasicAgent } from 'connectome-ts/src/agent/basic-agent';
 import { AgentComponent } from 'connectome-ts/src/agent/agent-component';
 import { persistable, persistent } from 'connectome-ts/src/persistence/decorators';
 import { Component } from 'connectome-ts/src/spaces/component';
-import { SpaceEvent } from 'connectome-ts/src/spaces/types';
-import { BaseReceptor, BaseEffector, BaseTransform } from 'connectome-ts/src/components/base-martem';
+import { SpaceEvent, ExecutionContext } from 'connectome-ts/src/spaces/types';
 import { AgentEffector } from 'connectome-ts/src/agent/agent-effector';
 import { ActionEffector } from 'connectome-ts/src/spaces/action-effector';
 import { ContextTransform } from 'connectome-ts/src/hud/context-transform';
 import { ComponentManager } from 'connectome-ts/src/spaces/component-manager';
-import type { Facet, ReadonlyVEILState, FacetDelta, EffectorResult, AgentInterface, VEILDelta } from 'connectome-ts/src';
+import type { Facet, ReadonlyVEILState } from 'connectome-ts/src';
 import { updateStateFacets } from 'connectome-ts/src/helpers/factories';
 
 export interface DiscordAppConfig {
@@ -32,29 +32,56 @@ export interface DiscordAppConfig {
 }
 
 /**
- * Receptor: Converts discord:connected events to facets
+ * FLEX Component: Discord Message Receptor
+ *
+ * Handles all Discord event-to-facet transformations:
+ * - discord:connected → config facets + connection event
+ * - discord:message → message facets + agent activations
+ * - discord:history-sync → offline edit/delete detection
+ * - discord:messageUpdate → message edit handling
+ * - discord:messageDelete → message deletion handling
+ *
+ * Priority 100: Standard receptor priority
  */
-class DiscordConnectedReceptor extends BaseReceptor {
-  topics = ['discord:connected'];
-  
-  transform(event: SpaceEvent, state: ReadonlyVEILState): any[] {
-    console.log('[DiscordConnectedReceptor] Processing discord:connected event');
-    const payload = event.payload as any;
+class DiscordMessageReceptor extends Component {
+  priority = 100;
 
-    const deltas: any[] = [];
+  execute(context: ExecutionContext): void {
+    const { event, state } = context;
+
+    switch (event.topic) {
+      case 'discord:connected':
+        this.handleConnected(event, state);
+        break;
+      case 'discord:message':
+        this.handleMessage(event, state);
+        break;
+      case 'discord:history-sync':
+        this.handleHistorySync(event, state);
+        break;
+      case 'discord:messageUpdate':
+        this.handleMessageUpdate(event, state);
+        break;
+      case 'discord:messageDelete':
+        this.handleMessageDelete(event, state);
+        break;
+    }
+  }
+
+  private handleConnected(event: SpaceEvent, state: ReadonlyVEILState): void {
+    console.log('[DiscordMessageReceptor] Processing discord:connected event');
+    const payload = event.payload as any;
 
     // Store bot user ID in a persistent config facet for easy access
     if (payload.botUserId) {
-      console.log(`[DiscordConnectedReceptor] Storing bot user ID: ${payload.botUserId}`);
-      deltas.push(...updateStateFacets(
-        'discord-config',
-        { botUserId: payload.botUserId },
-        state
-      ));
+      console.log(`[DiscordMessageReceptor] Storing bot user ID: ${payload.botUserId}`);
+      for (const delta of updateStateFacets('discord-config', { botUserId: payload.botUserId }, state)) {
+        this.addOperation(delta);
+      }
     }
 
     // Also create the connection event facet
-    deltas.push({
+    this.addOperation({
       type: 'addFacet',
       facet: {
         id: `discord-connected-${Date.now()}`,
@@ -67,62 +94,48 @@ class DiscordConnectedReceptor extends BaseReceptor {
         attributes: payload as Record<string, any>
       }
     });
-
-    return deltas;
   }
-}
 
-/**
- * Receptor: Converts discord:message events into message facets and agent activations
- * Also tracks lastRead per channel in VEIL for de-duplication
- */
-class DiscordMessageReceptor extends BaseReceptor {
-  topics = ['discord:message'];
-  
-  transform(event: SpaceEvent, state: ReadonlyVEILState): any[] {
+  private handleMessage(event: SpaceEvent, state: ReadonlyVEILState): void {
     const payload = event.payload as any;
     const { channelId, channelName, author, authorId, content, rawContent, mentions, attachments, reply, messageId, streamId, streamType, isBot } = payload;
-    // Note: isHistory removed - history messages come through discord:history-sync, not discord:message
-    
+
     // Check if we've already processed this message (de-dup against VEIL)
     const lastReadFacet = state.facets.get(`discord-lastread-${channelId}`);
     const lastMessageId = lastReadFacet?.state?.value;
-    
+
     if (lastMessageId && this.isOlderOrEqual(messageId, lastMessageId)) {
       console.log(`[DiscordMessageReceptor] Skipping old/duplicate message ${messageId}`);
-      return []; // Skip old message
+      return;
     }
-    
-    console.log(`[DiscordMessageReceptor] Processing message from ${author}: "${content}"${reply ? ' (reply)' : ''}`);
-    
-    const deltas: any[] = [];
 
-    // Retrieve bot user ID from VEIL state (set by DiscordConnectedReceptor)
+    console.log(`[DiscordMessageReceptor] Processing message from ${author}: "${content}"${reply ? ' (reply)' : ''}`);
+
+    // Retrieve bot user ID from VEIL state
     const botConfigFacet = state.facets.get('discord-config-botUserId');
     const botUserId = botConfigFacet?.state?.value;
 
     if (!botUserId) {
       console.warn('[DiscordMessageReceptor] Bot user ID not found in VEIL state, skipping activation checks');
     }
-    
+
     // Format content with reply syntax if this is a reply
     let formattedContent = content;
     let replyToUsername = null;
-    
+
     if (reply) {
-      // Find the referenced message in VEIL to get the author
       const referencedFacet = state.facets.get(`discord-msg-${reply.messageId}`);
       if (referencedFacet && referencedFacet.state?.metadata?.author) {
         replyToUsername = referencedFacet.state.metadata.author;
       } else if (reply.author) {
         replyToUsername = reply.author;
       }
-      
+
       if (replyToUsername) {
         formattedContent = `<reply:@${replyToUsername}> ${content}`;
       }
     }
-    
+
     // Create speech facet as nested child
     const speechFacet: any = {
       id: `speech-${messageId}`,
@@ -133,84 +146,54 @@ class DiscordMessageReceptor extends BaseReceptor {
       state: {
         speakerId: `discord:${authorId}`,
         speaker: author,
-        metadata: {
-          attachments
-        }
+        metadata: { attachments }
       }
     };
-    
+
     // If this is from the bot itself, mark it as agent-generated
     if (authorId === botUserId) {
-      speechFacet.agentId = 'connectome'; // TODO: Make configurable
+      speechFacet.agentId = 'connectome';
       speechFacet.agentName = 'Connectome';
     }
-    
-    // Create message facet (eventType must be in state for proper serialization!)
-    // Message is the platform-specific container, speech is the content
-    deltas.push({
+
+    // Create message facet with speech nested inside
+    this.addOperation({
       type: 'addFacet',
       facet: {
         id: `discord-msg-${messageId}`,
         type: 'event',
-        // No content - content is in the nested speech facet
         state: {
           source: 'discord',
           eventType: 'discord-message',
-          metadata: { 
-            channelName, 
-            author,
-            authorId,
-            isBot,
-            rawContent, // Original content with Discord IDs
-            mentions, // Structured mention metadata
-            attachments, // Attachments
-            reply // Reply information if this is a reply
-          }
+          metadata: { channelName, author, authorId, isBot, rawContent, mentions, attachments, reply }
         },
         streamId,
         streamType,
-        attributes: {
-          channelId,
-          messageId,
-          mentions, // Also include in attributes for easy access
-          reply // Reply information for quick access
-        },
-        children: [speechFacet] // Speech nested inside message
+        attributes: { channelId, messageId, mentions, reply },
+        children: [speechFacet]
       }
     });
-    
-    // Update lastRead in VEIL (nested facet pattern)
-    deltas.push(...updateStateFacets(
-      'discord-lastread',
-      { [channelId]: messageId },
-      state
-    ));
-    
+
+    // Update lastRead in VEIL
+    for (const delta of updateStateFacets('discord-lastread', { [channelId]: messageId }, state)) {
+      this.addOperation(delta);
+    }
+
     // Activate agent if the bot is mentioned or replied to
-    // (History messages don't come through this receptor anymore)
     if (botUserId) {
-      // Check if bot is mentioned
       const botMentioned = mentions?.users?.some((u: any) => u.id === botUserId);
-      
-      // Check if this is a reply to the bot
       const replyingToBot = reply?.authorId === botUserId;
-      
-      // Check for fallback activation pattern: "<activate AgentName>"
-      // This allows testing even without proper Discord mentions
       const activatePattern = /<activate\s+([^>]+)>/i;
       const activateMatch = rawContent?.match(activatePattern);
       const fallbackActivate = activateMatch !== null && activateMatch !== undefined;
-      
+
       if (botMentioned || replyingToBot || fallbackActivate) {
-        const reason = botMentioned ? 'bot_mentioned' : 
-                      replyingToBot ? 'bot_replied_to' : 
-                      'fallback_activate';
-        console.log(`[DiscordMessageReceptor] Creating agent activation (${reason}${fallbackActivate && activateMatch ? `: ${activateMatch[1]}` : ''})`);
-        
-        // Use factory helper to ensure consistent structure
+        const reason = botMentioned ? 'bot_mentioned' : replyingToBot ? 'bot_replied_to' : 'fallback_activate';
+        console.log(`[DiscordMessageReceptor] Creating agent activation (${reason})`);
+
         const { createAgentActivation } = require('connectome-ts/src/helpers/factories');
-        
-        deltas.push({
+
+        this.addOperation({
           type: 'addFacet',
           facet: createAgentActivation(reason, {
             id: `activation-${messageId}`,
@@ -220,144 +203,92 @@ class DiscordMessageReceptor extends BaseReceptor {
             channelId,
             messageId,
             author,
-            streamRef: {
-              streamId,
-              streamType,
-              metadata: {
-                channelId,
-                channelName
-              }
-            }
+            streamRef: { streamId, streamType, metadata: { channelId, channelName } }
           })
         });
-      } else {
-        console.log(`[DiscordMessageReceptor] Skipping activation (bot not mentioned or replied to)`);
       }
     }
-    
-    return deltas;
   }
-  
+
   private isOlderOrEqual(messageId: string, lastMessageId: string): boolean {
-    // Discord snowflake IDs are chronological
     try {
       return BigInt(messageId) <= BigInt(lastMessageId);
     } catch {
       return false;
     }
   }
-}
 
-/**
- * Receptor: Detects offline edits and deletes by comparing history to VEIL
- */
-class DiscordHistorySyncReceptor extends BaseReceptor {
-  topics = ['discord:history-sync'];
-  
-  transform(event: SpaceEvent, state: ReadonlyVEILState): any[] {
+  private handleHistorySync(event: SpaceEvent, state: ReadonlyVEILState): void {
     const { channelId, channelName, messages } = event.payload as any;
-    const deltas: any[] = [];
-    
-    console.log(`[DiscordHistorySync] Syncing ${messages.length} messages for channel ${channelId}`);
-    
+
+    console.log(`[DiscordMessageReceptor] Syncing ${messages.length} messages for channel ${channelId}`);
+
     // Build map of current Discord state
     const discordMessages = new Map(messages.map((m: any) => [m.messageId, m]));
-    
+
     // Find all Discord message facets for this channel in VEIL
     const veilMessages = Array.from(state.facets.values()).filter(
-      f => f.type === 'event' && 
-           (f as any).state?.eventType === 'discord-message' &&
-           (f as any).attributes?.channelId === channelId
+      f => f.type === 'event' &&
+        (f as any).state?.eventType === 'discord-message' &&
+        (f as any).attributes?.channelId === channelId
     );
-    
+
     let deletedCount = 0;
     let editedCount = 0;
     const newMessages: any[] = [];
-    
-    console.log(`[DiscordHistorySync] Found ${veilMessages.length} existing messages in VEIL, ${messages.length} in history`);
-    
+
+    console.log(`[DiscordMessageReceptor] Found ${veilMessages.length} existing messages in VEIL, ${messages.length} in history`);
+
     for (const veilMsg of veilMessages) {
       const messageId = (veilMsg as any).attributes.messageId;
-      
-      // Extract content from nested speech facet
       const speechFacet = (veilMsg as any).children?.[0];
       const veilContent = speechFacet?.content || '';
-      
       const discordMsg = discordMessages.get(messageId) as any;
-      
+
       if (!discordMsg) {
         // Message was DELETED offline
-        console.log(`[DiscordHistorySync] Message ${messageId} deleted offline`);
+        console.log(`[DiscordMessageReceptor] Message ${messageId} deleted offline`);
         deletedCount++;
-        
-        // Remove the message facet (exotemporal - rewriting reality)
-        deltas.push({
-          type: 'removeFacet',
-          id: veilMsg.id
-        });
-        
-        // Optional: Add event facet recording the deletion
-        deltas.push({
+
+        this.addOperation({ type: 'removeFacet', id: veilMsg.id });
+        this.addOperation({
           type: 'addFacet',
           facet: {
             id: `discord-offline-delete-${messageId}-${Date.now()}`,
             type: 'event',
             content: `[A message was deleted while offline]`,
-            state: {
-              source: 'discord-history-sync',
-              eventType: 'discord-message-deleted-offline',
-              metadata: { 
-                messageId, 
-                channelId 
-              }
-            },
-            attributes: { 
-              messageId, 
-              channelId 
-            },
+            state: { source: 'discord-history-sync', eventType: 'discord-message-deleted-offline', metadata: { messageId, channelId } },
+            attributes: { messageId, channelId },
             ephemeral: true
           }
         });
-        
       } else if (this.extractContent(veilContent) !== discordMsg.content) {
         // Message was EDITED offline
-        console.log(`[DiscordHistorySync] Message ${messageId} edited offline`);
+        console.log(`[DiscordMessageReceptor] Message ${messageId} edited offline`);
         editedCount++;
-        
-        // Update the speech facet with new content
+
         if (speechFacet) {
-          deltas.push({
+          this.addOperation({
             type: 'rewriteFacet',
             id: speechFacet.id,
-            changes: {
-              content: `${discordMsg.author}: ${discordMsg.content}` // Parsed content
-            }
+            changes: { content: `${discordMsg.author}: ${discordMsg.content}` }
           });
         }
-        
-        // Update the message facet metadata
-        deltas.push({
+
+        this.addOperation({
           type: 'rewriteFacet',
           id: veilMsg.id,
           changes: {
             state: {
               source: 'discord',
               eventType: 'discord-message',
-              metadata: {
-                ...((veilMsg as any).state?.metadata || {}),
-                rawContent: discordMsg.rawContent, // Update raw content
-                mentions: discordMsg.mentions // Update mention metadata
-              }
+              metadata: { ...((veilMsg as any).state?.metadata || {}), rawContent: discordMsg.rawContent, mentions: discordMsg.mentions }
             },
-            attributes: {
-              ...((veilMsg as any).attributes || {}),
-              mentions: discordMsg.mentions // Update mention metadata in attributes
-            }
+            attributes: { ...((veilMsg as any).attributes || {}), mentions: discordMsg.mentions }
           }
         });
-        
-        // Optional: Add event facet recording the edit
-        deltas.push({
+
+        this.addOperation({
           type: 'addFacet',
           facet: {
             id: `discord-offline-edit-${messageId}-${Date.now()}`,
@@ -366,162 +297,97 @@ class DiscordHistorySyncReceptor extends BaseReceptor {
             state: {
               source: 'discord-history-sync',
               eventType: 'discord-message-edited-offline',
-              metadata: { 
-                messageId, 
-                channelId,
-                oldContent: this.extractContent(veilContent),
-                newContent: discordMsg.content
-              }
+              metadata: { messageId, channelId, oldContent: this.extractContent(veilContent), newContent: discordMsg.content }
             },
-            attributes: { 
-              messageId, 
-              channelId
-            }
+            attributes: { messageId, channelId }
           }
         });
       }
     }
-    
-    // Find messages in Discord history that aren't in VEIL yet (new messages)
+
+    // Find messages in Discord history that aren't in VEIL yet
     const veilMessageIds = new Set(veilMessages.map(v => (v as any).attributes.messageId));
     for (const msg of messages) {
       if (!veilMessageIds.has(msg.messageId)) {
         newMessages.push(msg);
       }
     }
-    
-    console.log(`[DiscordHistorySync] ${editedCount} edits, ${deletedCount} deletions, ${newMessages.length} new messages`);
-    
-    // Create a single parent facet for new history messages (if any)
+
+    console.log(`[DiscordMessageReceptor] ${editedCount} edits, ${deletedCount} deletions, ${newMessages.length} new messages`);
+
+    // Create a single parent facet for new history messages
     if (newMessages.length > 0) {
       const children: any[] = [];
-      
+
       for (const msg of newMessages) {
-        // Create nested message facet with speech child
         const speechFacet = {
           id: `speech-${msg.messageId}`,
           type: 'speech',
-          content: msg.content,  // Just content, HUD will add speaker prefix
-          state: {
-            speakerId: `discord:${msg.authorId}`,
-            speaker: msg.author
-          }
+          content: msg.content,
+          state: { speakerId: `discord:${msg.authorId}`, speaker: msg.author }
         };
-        
+
         children.push({
           id: `discord-msg-${msg.messageId}`,
           type: 'event',
           state: {
             source: 'discord',
             eventType: 'discord-message',
-            metadata: {
-              channelName,
-              author: msg.author,
-              authorId: msg.authorId,
-              isBot: msg.isBot,
-              rawContent: msg.rawContent,
-              mentions: msg.mentions
-            }
+            metadata: { channelName, author: msg.author, authorId: msg.authorId, isBot: msg.isBot, rawContent: msg.rawContent, mentions: msg.mentions }
           },
-          attributes: {
-            channelId,
-            messageId: msg.messageId,
-            mentions: msg.mentions
-          },
+          attributes: { channelId, messageId: msg.messageId, mentions: msg.mentions },
           children: [speechFacet]
         });
       }
-      
-      // Create parent history facet with all new messages as children
-      deltas.push({
+
+      this.addOperation({
         type: 'addFacet',
         facet: {
           id: `discord-history-${channelId}-${Date.now()}`,
           type: 'event',
-          displayName: 'discord-history',  // HUD can use this for wrapping
-          state: {
-            source: 'discord',
-            eventType: 'discord-history-dump',
-            metadata: {
-              channelId,
-              channelName,
-              messageCount: newMessages.length
-            }
-          },
-          attributes: {
-            channelId,
-            messageCount: newMessages.length
-          },
-          children  // All messages nested inside
+          displayName: 'discord-history',
+          state: { source: 'discord', eventType: 'discord-history-dump', metadata: { channelId, channelName, messageCount: newMessages.length } },
+          attributes: { channelId, messageCount: newMessages.length },
+          children
         }
       });
     }
-    
-    return deltas;
   }
-  
+
   private extractContent(fullContent: string | undefined): string {
     if (!fullContent) return '';
-    // Extract message content from "Author: content" format
     const match = fullContent.match(/^[^:]+: (.+)$/);
     return match ? match[1] : fullContent;
   }
-}
 
-/**
- * Receptor: Handles message edits
- */
-class DiscordMessageUpdateReceptor extends BaseReceptor {
-  topics = ['discord:messageUpdate'];
-  
-  transform(event: SpaceEvent, state: ReadonlyVEILState): any[] {
+  private handleMessageUpdate(event: SpaceEvent, state: ReadonlyVEILState): void {
     const payload = event.payload as any;
     const { messageId, content, rawContent, oldContent, rawOldContent, mentions, author, authorId, channelName, isBot } = payload;
-    
-    console.log(`[DiscordMessageUpdateReceptor] Message ${messageId} edited by ${author}`);
-    
-    const deltas: any[] = [];
+
+    console.log(`[DiscordMessageReceptor] Message ${messageId} edited by ${author}`);
+
     const facetId = `discord-msg-${messageId}`;
     const speechFacetId = `speech-${messageId}`;
-    
-    // Check if the message facet exists
+
     if (state.facets.has(facetId)) {
-      // Update the speech facet with new content
       if (state.facets.has(speechFacetId)) {
-        deltas.push({
+        this.addOperation({
           type: 'rewriteFacet',
           id: speechFacetId,
-          changes: {
-            content: `${author}: ${content}` // Use parsed content
-          }
+          changes: { content: `${author}: ${content}` }
         });
       }
-      
-      // Update the message facet metadata (but not content - that's in speech)
-      deltas.push({
+
+      this.addOperation({
         type: 'rewriteFacet',
         id: facetId,
         changes: {
-          state: {
-            source: 'discord',
-            eventType: 'discord-message',
-            metadata: {
-              channelName,
-              author,
-              authorId,
-              isBot,
-              rawContent, // Updated raw content
-              mentions // Updated mention metadata
-            }
-          },
-          attributes: {
-            mentions // Updated mention metadata in attributes
-          }
+          state: { source: 'discord', eventType: 'discord-message', metadata: { channelName, author, authorId, isBot, rawContent, mentions } },
+          attributes: { mentions }
         }
       });
-      
-      // Create an event facet for the edit
-      deltas.push({
+
+      this.addOperation({
         type: 'addFacet',
         facet: {
           id: `discord-edit-${messageId}-${Date.now()}`,
@@ -530,58 +396,26 @@ class DiscordMessageUpdateReceptor extends BaseReceptor {
           state: {
             source: 'discord',
             eventType: 'discord-message-edited',
-            metadata: {
-              messageId,
-              author,
-              authorId,
-              channelName,
-              oldContent, // Parsed old content
-              newContent: content, // Parsed new content
-              rawOldContent, // Original old content
-              rawNewContent: rawContent, // Original new content
-              mentions // New mention metadata
-            }
+            metadata: { messageId, author, authorId, channelName, oldContent, newContent: content, rawOldContent, rawNewContent: rawContent, mentions }
           },
-          attributes: {
-            messageId,
-            oldContent,
-            newContent: content,
-            author,
-            mentions
-          }
+          attributes: { messageId, oldContent, newContent: content, author, mentions }
         }
       });
     }
-    
-    return deltas;
   }
-}
 
-/**
- * Receptor: Handles message deletions
- */
-class DiscordMessageDeleteReceptor extends BaseReceptor {
-  topics = ['discord:messageDelete'];
-  
-  transform(event: SpaceEvent, state: ReadonlyVEILState): any[] {
+  private handleMessageDelete(event: SpaceEvent, state: ReadonlyVEILState): void {
     const payload = event.payload as any;
     const { messageId, author, channelName } = payload;
-    
-    console.log(`[DiscordMessageDeleteReceptor] Message ${messageId} deleted`);
-    
-    const deltas: any[] = [];
+
+    console.log(`[DiscordMessageReceptor] Message ${messageId} deleted`);
+
     const facetId = `discord-msg-${messageId}`;
-    
-    // Check if the message facet exists
+
     if (state.facets.has(facetId)) {
-      // Remove the message facet (exotemporal - updating to reality)
-      deltas.push({
-        type: 'removeFacet',
-        id: facetId
-      });
-      
-      // Create an event facet for the deletion
-      deltas.push({
+      this.addOperation({ type: 'removeFacet', id: facetId });
+
+      this.addOperation({
         type: 'addFacet',
         facet: {
           id: `discord-delete-${messageId}-${Date.now()}`,
@@ -590,445 +424,308 @@ class DiscordMessageDeleteReceptor extends BaseReceptor {
           state: {
             source: 'discord',
             eventType: 'discord-message-deleted',
-            metadata: {
-              messageId,
-              author,
-              channelName,
-              deletedFacetId: facetId
-            }
+            metadata: { messageId, author, channelName, deletedFacetId: facetId }
           },
-          attributes: {
-            messageId,
-            author,
-            deletedFacetId: facetId
-          }
+          attributes: { messageId, author, deletedFacetId: facetId }
         }
       });
     }
-    
-    return deltas;
   }
-}
-
-
-
-
+}  // End of DiscordMessageReceptor class
 /**
- * Transform: Watches for infrastructure components and triggers Discord component creation
- * when all required components are ready.
+ * FLEX Component: Discord Infrastructure
+ *
+ * Watches for required components to be mounted and triggers DiscordAfferent creation.
+ *
+ * Priority 150: Early transform priority (after receptors at 100)
  */
-class DiscordInfrastructureTransform extends BaseTransform {
-  priority = 100; // Run early in transform phase
+class DiscordInfrastructureTransform extends Component {
+  priority = 150;
 
   // Discord configuration (injected via component config)
   private discordConfig?: any;
 
-  // Track which components we're waiting for
+  // Track which components we're waiting for (simplified for merged receptor)
   private requiredComponents = new Set([
-    'DiscordConnectedReceptor',
     'DiscordMessageReceptor',
-    'DiscordHistorySyncReceptor',
-    'DiscordMessageUpdateReceptor',
-    'DiscordMessageDeleteReceptor',
-    'DiscordSpeechEffector',
-    'DiscordTypingEffector',
+    'DiscordEffector',
     'AgentEffector',
     'ActionEffector',
     'ContextTransform'
   ]);
 
-  // Track if we've already triggered initialization
   private hasTriggered = false;
 
-  process(state: ReadonlyVEILState): VEILDelta[] {
-    if (this.hasTriggered) return [];
+  execute(context: ExecutionContext): void {
+    if (this.hasTriggered) return;
 
-    // Wait for config to be injected
     if (!this.discordConfig) {
       console.log('[DiscordInfrastructure] Waiting for config...');
-      return [];
+      return;
     }
 
-    // Check directly mounted components on Space
     const space = this.space;
     if (!space) {
       console.log('[DiscordInfrastructure] Space not available yet...');
-      return [];
+      return;
     }
 
-    // Get all components (flat list)
     const components = space.components || [];
     const mountedTypes = new Set(components.map((c: any) => c.constructor.name));
 
-    // Check if all required components are present
     const allReady = [...this.requiredComponents].every(type => mountedTypes.has(type));
 
     if (!allReady) {
       console.log('[DiscordInfrastructure] Waiting for components... Have:', Array.from(mountedTypes), 'Need:', Array.from(this.requiredComponents));
-      return [];
+      return;
     }
 
-    // Check if DiscordAfferent already mounted (idempotent)
     const hasDiscordAfferent = components.some((c: any) => c.constructor.name === 'DiscordAfferent');
     if (hasDiscordAfferent) {
       console.log('[DiscordInfrastructure] DiscordAfferent already exists, skipping creation');
       this.hasTriggered = true;
-      return [];
+      return;
     }
 
     console.log('[DiscordInfrastructure] All components ready - creating DiscordAfferent via component:add');
     this.hasTriggered = true;
 
-    // Create component:add event - handled by ComponentManager
-    // This is an event facet, not a direct operation, so we emit it as a veil:operation or similar?
-    // Transforms can only return DELTAS.
-    // To trigger component creation, we can create an event facet that ComponentManager listens to.
-    // ComponentManager listens to component:add events in frame.events.
-    // Transforms run AFTER frame.events processing.
-    // So we need to queue an event for NEXT frame.
-    // BUT Transforms cannot emit events directly, they only return DELTAS.
-    // However, BaseTransform has access to `this.space`, so we can emit.
-    
     this.emit({
-        topic: 'component:add',
-        // source: this.getRef(), // Auto-filled by Component.emit()
-        timestamp: Date.now(),
-        payload: {
-            componentType: 'DiscordAfferent',
-            componentId: 'discord:DiscordAfferent',
-            config: {
-              host: this.discordConfig.host,
-              path: this.discordConfig.path,
-              guild: this.discordConfig.guild,
-              agent: this.discordConfig.agent,
-              token: this.discordConfig.token,
-              autoJoinChannels: this.discordConfig.autoJoinChannels || [],
-              _axonMetadata: {
-                moduleUrl: this.discordConfig.moduleUrl,
-                manifestUrl: this.discordConfig.manifestUrl
-              }
-            }
+      topic: 'component:add',
+      timestamp: Date.now(),
+      payload: {
+        componentType: 'DiscordAfferent',
+        componentId: 'discord:DiscordAfferent',
+        config: {
+          host: this.discordConfig.host,
+          path: this.discordConfig.path,
+          guild: this.discordConfig.guild,
+          agent: this.discordConfig.agent,
+          token: this.discordConfig.token,
+          autoJoinChannels: this.discordConfig.autoJoinChannels || [],
+          _axonMetadata: {
+            moduleUrl: this.discordConfig.moduleUrl,
+            manifestUrl: this.discordConfig.manifestUrl
+          }
         }
+      }
     });
-
-    return [];
   }
 }
 
 /**
- * Effector: Auto-joins Discord channels when connected
- * Config-based for VEIL persistence
+ * FLEX Component: Discord Effector
+ *
+ * Handles all Discord side effects:
+ * - Auto-join channels when connected
+ * - Send typing indicators when agent activates
+ * - Send agent speech to Discord
+ *
+ * Priority 300: Standard effector priority
  */
-class DiscordAutoJoinEffector extends BaseEffector {
-  facetFilters = [{ type: 'event' }];
+class DiscordEffector extends Component {
+  priority = 300;
 
   private discordAfferent?: any;
   private channels: string[] = [];
 
-  async onMount(): Promise<void> {
-    // Find DiscordAfferent component directly in flat list
+  onMount(): void {
     const space = this.space;
-
     if (space) {
       this.discordAfferent = space.components.find((c: any) =>
         c.constructor.name === 'DiscordAfferent'
       );
-      console.log(`[DiscordAutoJoinEffector] Found DiscordAfferent:`, !!this.discordAfferent);
+      console.log(`[DiscordEffector] Found DiscordAfferent:`, !!this.discordAfferent);
     }
   }
 
-  async process(changes: FacetDelta[], state: ReadonlyVEILState): Promise<EffectorResult> {
-    const events: SpaceEvent[] = [];
+  execute(context: ExecutionContext): void {
+    const { state, frame } = context;
 
-    // Lazy lookup
+    // Lazy lookup for DiscordAfferent
     if (!this.discordAfferent) {
       const space = this.space;
       if (space) {
         this.discordAfferent = space.components.find((c: any) =>
           c.constructor.name === 'DiscordAfferent'
         );
-        if (this.discordAfferent) {
-          console.log('[DiscordAutoJoinEffector] Found DiscordAfferent on lazy lookup');
-        }
       }
     }
 
-    // Skip if not configured yet
-    if (!this.discordAfferent || !this.channels || this.channels.length === 0) {
-      return { events };
-    }
+    // Process frame deltas for facets we care about
+    if (frame && frame.deltas) {
+      for (const delta of frame.deltas) {
+        if (delta.type === 'addFacet') {
+          const facet = delta.facet;
 
-    // Check if we have a discord:connected facet
-    const hasConnected = changes.some(
-      c => c.type === 'added' && c.facet.type === 'event' &&
-      (c.facet as any).state?.eventType === 'discord-connected'
-    );
+          // Handle discord:connected - auto-join channels
+          if (facet.type === 'event' && (facet as any).state?.eventType === 'discord-connected') {
+            this.handleConnected(state);
+          }
 
-    if (!hasConnected) {
-      return { events };
+          // Handle agent-activation - send typing indicator
+          if (facet.type === 'agent-activation') {
+            this.handleActivation(facet, state);
+          }
+
+          // Handle speech - send to Discord
+          if (facet.type === 'speech') {
+            this.handleSpeech(facet, state);
+          }
+        }
+      }
     }
+  }
+
+  private handleConnected(state: ReadonlyVEILState): void {
+    if (!this.discordAfferent || !this.channels || this.channels.length === 0) return;
 
     console.log('🤖 Discord connected! Auto-joining channels:', this.channels);
 
-    // Call join directly on the DiscordAfferent component
     for (const channelId of this.channels) {
       console.log(`📢 Calling join for channel: ${channelId}`);
 
       if (this.discordAfferent.join && typeof this.discordAfferent.join === 'function') {
-        try {
-          await this.discordAfferent.join({ channelId });
-        } catch (error) {
-          console.error(`Failed to join channel ${channelId}:`, error);
-        }
-      } else if (this.discordAfferent.actions && this.discordAfferent.actions.has('join')) {
-        try {
-          const handler = this.discordAfferent.actions.get('join');
-          await handler({ channelId });
-        } catch (error) {
-          console.error(`Failed to join channel ${channelId}:`, error);
-        }
-      }
-    }
-
-    return { events };
-  }
-}
-
-/**
- * Effector: Sends typing indicators when agent activates
- */
-class DiscordTypingEffector extends BaseEffector {
-  facetFilters = [{ type: 'agent-activation' }];
-
-  private discordAfferent?: any;
-
-  async onMount(): Promise<void> {
-    const space = this.space;
-    if (space) {
-      this.discordAfferent = space.components.find((c: any) =>
-        c.constructor.name === 'DiscordAfferent'
-      );
-    }
-  }
-
-  async process(changes: FacetDelta[], state: ReadonlyVEILState): Promise<EffectorResult> {
-    const events: SpaceEvent[] = [];
-
-    // Lazy lookup
-    if (!this.discordAfferent) {
-      const space = this.space;
-      if (space) {
-        this.discordAfferent = space.components.find((c: any) =>
-          c.constructor.name === 'DiscordAfferent'
+        this.discordAfferent.join({ channelId }).catch((err: any) =>
+          console.error(`Failed to join channel ${channelId}:`, err)
+        );
+      } else if (this.discordAfferent.actions?.has('join')) {
+        this.discordAfferent.actions.get('join')({ channelId }).catch((err: any) =>
+          console.error(`Failed to join channel ${channelId}:`, err)
         );
       }
     }
-
-    for (const change of changes) {
-      if (change.type !== 'added' || change.facet.type !== 'agent-activation') continue;
-
-      const activation = change.facet as any;
-      const channelId = activation.state?.channelId || activation.state?.metadata?.channelId;
-
-      if (!channelId) continue;
-
-      console.log(`[DiscordTypingEffector] Sending typing indicator to channel: ${channelId}`);
-
-      // Call sendTyping directly on DiscordAfferent
-      if (this.discordAfferent?.sendTyping) {
-        try {
-          await this.discordAfferent.sendTyping({ channelId });
-        } catch (error) {
-          console.error(`Failed to send typing indicator:`, error);
-        }
-      }
-    }
-
-    return { events };
-  }
-}
-
-/**
- * Effector: Sends agent speech to Discord
- */
-class DiscordSpeechEffector extends BaseEffector {
-  facetFilters = [{ type: 'speech' }];
-
-  private discordAfferent?: any;
-
-  async onMount(): Promise<void> {
-    const space = this.space;
-
-    if (space) {
-      this.discordAfferent = space.components.find((c: any) =>
-        c.constructor.name === 'DiscordAfferent'
-      );
-      console.log(`[DiscordSpeechEffector] Found DiscordAfferent:`, !!this.discordAfferent);
-    }
   }
 
-  async process(changes: FacetDelta[], state: ReadonlyVEILState): Promise<EffectorResult> {
-    const events: SpaceEvent[] = [];
+  private handleActivation(facet: Facet, state: ReadonlyVEILState): void {
+    const activation = facet as any;
+    const channelId = activation.state?.channelId || activation.state?.metadata?.channelId;
 
-    // Lazy lookup
+    if (!channelId || !this.discordAfferent?.sendTyping) return;
+
+    console.log(`[DiscordEffector] Sending typing indicator to channel: ${channelId}`);
+
+    this.discordAfferent.sendTyping({ channelId }).catch((err: any) =>
+      console.error(`Failed to send typing indicator:`, err)
+    );
+  }
+
+  private handleSpeech(facet: Facet, state: ReadonlyVEILState): void {
+    const speech = facet as any;
+    const streamId = speech.streamId;
+    let content = speech.content;
+
+    // Check if this is for Discord
+    if (!streamId || !streamId.startsWith('discord:')) return;
+
+    console.log(`[DiscordEffector] Processing speech for stream: ${streamId}`);
+
+    // Check for reply syntax: <reply:@username> message
+    const replyMatch = content.match(/^<reply:@([^>]+)>\s*/);
+    let replyToMessageId = null;
+
+    if (replyMatch) {
+      const replyToUsername = replyMatch[1];
+      content = content.substring(replyMatch[0].length);
+      console.log(`[DiscordEffector] Detected reply to @${replyToUsername}`);
+      replyToMessageId = this.inferReplyTarget(replyToUsername, speech, state);
+    }
+
+    // Find the channel ID from latest discord message
+    const discordMessages = Array.from(state.facets.values()).filter(
+      f => f.type === 'event' && (f as any).state?.eventType === 'discord-message'
+    );
+
+    if (discordMessages.length === 0) {
+      console.warn('[DiscordEffector] No discord-message facets found');
+      return;
+    }
+
+    const latestMessage = discordMessages[discordMessages.length - 1] as any;
+    const channelId = latestMessage.attributes?.channelId;
+
+    if (!channelId) {
+      console.warn('[DiscordEffector] No channelId in message facet');
+      return;
+    }
+
+    const sendParams: any = { channelId, message: content };
+    if (replyToMessageId) {
+      sendParams.replyTo = replyToMessageId;
+      console.log(`[DiscordEffector] Sending as reply to message ${replyToMessageId}`);
+    }
+
+    console.log(`[DiscordEffector] Sending to channel ${channelId}: "${content}"`);
+
     if (!this.discordAfferent) {
-      const space = this.space;
-      if (space) {
-        this.discordAfferent = space.components.find((c: any) =>
-          c.constructor.name === 'DiscordAfferent'
-        );
-        if (this.discordAfferent) {
-          console.log('[DiscordSpeechEffector] Found DiscordAfferent on lazy lookup');
-        }
-      }
+      console.error('[DiscordEffector] DiscordAfferent not available');
+      return;
     }
-    
-    for (const change of changes) {
-      if (change.type !== 'added' || change.facet.type !== 'speech') continue;
-      
-      const speech = change.facet as any;
-      const streamId = speech.streamId;
-      let content = speech.content;
-      
-      // Check if this is for Discord
-      if (!streamId || !streamId.startsWith('discord:')) continue;
-      
-      console.log(`[DiscordSpeechEffector] Processing speech for stream: ${streamId}`);
-      
-      // Check for reply syntax: <reply:@username> message
-      const replyMatch = content.match(/^<reply:@([^>]+)>\s*/);
-      let replyToUsername = null;
-      let replyToMessageId = null;
 
-      if (replyMatch) {
-        replyToUsername = replyMatch[1];
-        content = content.substring(replyMatch[0].length); // Strip reply syntax
-        console.log(`[DiscordSpeechEffector] Detected reply to @${replyToUsername}`);
-
-        // Infer which message to reply to using heuristics
-        replyToMessageId = this.inferReplyTarget(replyToUsername, speech, state);
-      }
-
-      // Find the channel ID
-      const discordMessages = Array.from(state.facets.values()).filter(
-        f => f.type === 'event' && f.state.eventType === 'discord-message'
-      );
-      
-      if (discordMessages.length === 0) {
-        console.warn('[DiscordSpeechEffector] No discord-message facets found');
-        continue;
-      }
-      
-      const latestMessage = discordMessages[discordMessages.length - 1] as any;
-      const channelId = latestMessage.attributes?.channelId;
-      
-      if (!channelId) {
-        console.warn('[DiscordSpeechEffector] No channelId in message facet');
-        continue;
-      }
-
-      // Send message (as reply if we have a target)
-      const sendParams: any = { channelId, message: content };
-      if (replyToMessageId) {
-        sendParams.replyTo = replyToMessageId;
-        console.log(`[DiscordSpeechEffector] Sending as reply to message ${replyToMessageId}`);
-      }
-      
-      console.log(`[DiscordSpeechEffector] Sending to channel ${channelId}: "${content}"`);
-
-      // Call send directly on DiscordAfferent
-      if (!this.discordAfferent) {
-        console.error('[DiscordSpeechEffector] DiscordAfferent not available (even after lazy lookup)');
-        continue;
-      }
-
-      // Try send method first
-      if (this.discordAfferent.send && typeof this.discordAfferent.send === 'function') {
-        try {
-          await this.discordAfferent.send(sendParams);
-          console.log(`[DiscordSpeechEffector] Successfully sent message`);
-        } catch (error) {
-          console.error(`Failed to send to Discord:`, error);
-        }
-      } else if (this.discordAfferent.actions && this.discordAfferent.actions.has('send')) {
-        // Fallback to actions map
-        try {
-          const handler = this.discordAfferent.actions.get('send');
-          await handler(sendParams);
-          console.log(`[DiscordSpeechEffector] Successfully sent message`);
-        } catch (error) {
-          console.error(`Failed to send to Discord:`, error);
-        }
-      }
+    if (this.discordAfferent.send && typeof this.discordAfferent.send === 'function') {
+      this.discordAfferent.send(sendParams)
+        .then(() => console.log(`[DiscordEffector] Successfully sent message`))
+        .catch((err: any) => console.error(`Failed to send to Discord:`, err));
+    } else if (this.discordAfferent.actions?.has('send')) {
+      this.discordAfferent.actions.get('send')(sendParams)
+        .then(() => console.log(`[DiscordEffector] Successfully sent message`))
+        .catch((err: any) => console.error(`Failed to send to Discord:`, err));
     }
-    
-    return { events };
   }
-  
-  /**
-   * Infer which message to reply to using heuristics
-   */
+
   private inferReplyTarget(username: string, speech: any, state: ReadonlyVEILState): string | null {
     const discordMessages = Array.from(state.facets.values()).filter(
-      f => f.type === 'event' && f.state?.eventType === 'discord-message'
+      f => f.type === 'event' && (f as any).state?.eventType === 'discord-message'
     ) as any[];
-    
+
     // Heuristic 1: Check the activation event
     const activations = Array.from(state.facets.values()).filter(
-      f => f.type === 'agent-activation' && 
-      f.state?.streamRef?.streamId === speech.streamId
+      f => f.type === 'agent-activation' && (f as any).state?.streamRef?.streamId === speech.streamId
     ) as any[];
-    
+
     if (activations.length > 0) {
       const latestActivation = activations[activations.length - 1];
       const triggerMessageId = latestActivation.state?.messageId;
       if (triggerMessageId) {
         const triggerMessage = discordMessages.find(m => m.attributes?.messageId === triggerMessageId);
         if (triggerMessage && triggerMessage.state?.metadata?.author === username) {
-          console.log(`[DiscordSpeechEffector] Reply target (activation): ${triggerMessageId}`);
+          console.log(`[DiscordEffector] Reply target (activation): ${triggerMessageId}`);
           return triggerMessageId;
         }
       }
     }
-    
-    // Heuristic 2: Find last message from username that mentioned the bot or replied to it
+
+    // Heuristic 2: Find last message from username that mentioned/replied to bot
     const botConfigFacet = state.facets.get('discord-config-botUserId');
     const botUserId = botConfigFacet?.state?.value;
-
-    if (!botUserId) {
-      console.log(`[DiscordSpeechEffector] Bot user ID not found in VEIL, using fallback heuristic`);
-    }
 
     for (let i = discordMessages.length - 1; i >= 0; i--) {
       const msg = discordMessages[i];
       if (msg.state?.metadata?.author !== username) continue;
-      
-      // Check if it mentioned the bot
+
       const mentions = msg.state?.metadata?.mentions;
       if (mentions?.users?.some((u: any) => u.id === botUserId)) {
-        console.log(`[DiscordSpeechEffector] Reply target (mentioned bot): ${msg.attributes.messageId}`);
+        console.log(`[DiscordEffector] Reply target (mentioned bot): ${msg.attributes.messageId}`);
         return msg.attributes.messageId;
       }
-      
-      // Check if it was a reply to the bot
+
       const reply = msg.state?.metadata?.reply;
       if (reply?.authorId === botUserId) {
-        console.log(`[DiscordSpeechEffector] Reply target (replied to bot): ${msg.attributes.messageId}`);
+        console.log(`[DiscordEffector] Reply target (replied to bot): ${msg.attributes.messageId}`);
         return msg.attributes.messageId;
       }
     }
-    
-    // Heuristic 3: Find last message from username (any)
+
+    // Heuristic 3: Find last message from username
     for (let i = discordMessages.length - 1; i >= 0; i--) {
       const msg = discordMessages[i];
       if (msg.state?.metadata?.author === username) {
-        console.log(`[DiscordSpeechEffector] Reply target (last from user): ${msg.attributes.messageId}`);
+        console.log(`[DiscordEffector] Reply target (last from user): ${msg.attributes.messageId}`);
         return msg.attributes.messageId;
       }
     }
-    
-    // Fallback: No message found - will send as mention instead of reply
-    console.log(`[DiscordSpeechEffector] No reply target found for @${username}, will send as mention`);
+
+    console.log(`[DiscordEffector] No reply target found for @${username}`);
     return null;
   }
 }
@@ -1129,70 +826,34 @@ export class DiscordApplication implements ConnectomeApplication {
     });
 
 
-    // STEP 2: Add all RETM infrastructure components
-    console.log('➕ Adding Discord RETM components...');
+    // STEP 2: Add FLEX components (merged for performance)
+    console.log('➕ Adding Discord FLEX components...');
 
-    const receptorTypes = [
-      'DiscordConnectedReceptor',
-      'DiscordMessageReceptor',
-      'DiscordHistorySyncReceptor',
-      'DiscordMessageUpdateReceptor',
-      'DiscordMessageDeleteReceptor'
-    ];
-
-    for (const type of receptorTypes) {
-      space.emit({
-        topic: 'component:add',
-        source: space.getRef(),
-        timestamp: Date.now(),
-        payload: {
-          componentType: type,
-          componentId: `discord:${type}`,
-          config: {}
-        }
-      });
-    }
-
-    // Add DiscordSpeechEffector
+    // Add merged DiscordMessageReceptor (handles all discord events → facets)
     space.emit({
       topic: 'component:add',
       source: space.getRef(),
       timestamp: Date.now(),
       payload: {
-        componentType: 'DiscordSpeechEffector',
-        componentId: 'discord:DiscordSpeechEffector',
+        componentType: 'DiscordMessageReceptor',
+        componentId: 'discord:DiscordMessageReceptor',
         config: {}
       }
     });
 
-
-    // Add DiscordTypingEffector
+    // Add merged DiscordEffector (handles auto-join, typing, speech)
     space.emit({
       topic: 'component:add',
       source: space.getRef(),
       timestamp: Date.now(),
       payload: {
-        componentType: 'DiscordTypingEffector',
-        componentId: 'discord:DiscordTypingEffector',
-        config: {}
+        componentType: 'DiscordEffector',
+        componentId: 'discord:DiscordEffector',
+        config: {
+          channels: this.config.discord.autoJoinChannels || []
+        }
       }
     });
-
-    // Add DiscordAutoJoinEffector if configured
-    if (this.config.discord.autoJoinChannels && this.config.discord.autoJoinChannels.length > 0) {
-      space.emit({
-        topic: 'component:add',
-        source: space.getRef(),
-        timestamp: Date.now(),
-        payload: {
-          componentType: 'DiscordAutoJoinEffector',
-          componentId: 'discord:DiscordAutoJoinEffector',
-          config: {
-            channels: this.config.discord.autoJoinChannels
-          }
-        }
-      });
-    }
 
     // Add AgentEffector, ActionEffector, and ContextTransform
     space.emit({
@@ -1351,27 +1012,26 @@ export class DiscordApplication implements ConnectomeApplication {
   
   getComponentRegistry(): typeof ComponentRegistry {
     const registry = ComponentRegistry;
-    
-    // Register all components
+
+    // Register all FLEX components
     registry.register('AgentComponent', AgentComponent);
     registry.register('DiscordAutoJoinComponent', DiscordAutoJoinComponent);
-    registry.register('DiscordAutoJoinEffector', DiscordAutoJoinEffector);
 
-    // Register RETM components
-    registry.register('ComponentManager', ComponentManager); // Register ComponentManager
+    // Register FLEX infrastructure
+    registry.register('ComponentManager', ComponentManager);
     registry.register('DiscordInfrastructureTransform', DiscordInfrastructureTransform);
-    registry.register('DiscordConnectedReceptor', DiscordConnectedReceptor);
+
+    // Merged FLEX receptor (handles all discord events)
     registry.register('DiscordMessageReceptor', DiscordMessageReceptor);
-    registry.register('DiscordHistorySyncReceptor', DiscordHistorySyncReceptor);
-    registry.register('DiscordMessageUpdateReceptor', DiscordMessageUpdateReceptor);
-    registry.register('DiscordMessageDeleteReceptor', DiscordMessageDeleteReceptor);
-    registry.register('DiscordSpeechEffector', DiscordSpeechEffector);
-    registry.register('DiscordTypingEffector', DiscordTypingEffector);
+
+    // Merged FLEX effector (handles auto-join, typing, speech)
+    registry.register('DiscordEffector', DiscordEffector);
+
+    // Core components
     registry.register('AgentEffector', AgentEffector);
     registry.register('ActionEffector', ActionEffector);
     registry.register('ContextTransform', ContextTransform);
-    registry.register('DiscordAutoJoinEffector', DiscordAutoJoinEffector);
-    
+
     return registry;
   }
   

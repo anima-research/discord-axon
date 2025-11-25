@@ -6,8 +6,8 @@ import type { IPersistentMetadata } from '@connectome/axon-interfaces';
 import type { IAxonEnvironmentV2 } from 'connectome-ts/src/axon/interfaces-v2';
 
 export function createModule(env: IAxonEnvironmentV2) {
-  const { InteractiveComponent, BaseReceptor } = env;
-  
+  const { InteractiveComponent, Component } = env;
+
   class ElementControlComponent extends InteractiveComponent {
     static persistentProperties: IPersistentMetadata[] = [];
     
@@ -122,35 +122,35 @@ export function createModule(env: IAxonEnvironmentV2) {
   }
   
   // Receptor to create action-definition facets when element-control mounts
-  class ElementControlActionsReceptor extends BaseReceptor {
+  // FLEX Component with priority 100 (Receptor level)
+  class ElementControlActionsReceptor extends Component {
+    priority = 100;
     topics = ['component:mounted'];
-    
-    transform(event: any, state: any): any[] {
+
+    execute(context: any): void {
+      const { event } = context;
+      if (!event || event.topic !== 'component:mounted') return;
+
       const payload = event.payload;
-      
-      // console.log('[ElementControlActionsReceptor] component:mounted event:', payload);
-      
+
       // Only process when ElementControlComponent is mounted
-      if (payload.componentType !== 'ElementControlComponent') return [];
-      
+      if (payload.componentType !== 'ElementControlComponent') return;
+
       console.log('[ElementControlActionsReceptor] ✨ Creating action-definition facets for element-control!');
-      
-      const deltas = [];
+
       const targetId = payload.componentId || 'element-control';
-      
+
       // Create action-definition facet for createComponent
-      deltas.push({
+      (this as any).addOperation({
         type: 'addFacet',
         facet: {
           id: `action-def-${targetId}-createComponent`,
           type: 'action-definition',
           displayName: 'element-control.createComponent',
           attributes: {
-            toolName: 'element-control.createComponent', // Map to this component ID?
-            // If componentId is 'element-control:ElementControlComponent', tool might be 'element-control.createComponent'
-            // ActionEffector uses prefix matching so 'element-control' prefix matches 'element-control:ElementControlComponent'
+            toolName: 'element-control.createComponent',
             actionName: 'createComponent',
-            elementId: 'element-control', // Logical ID for grouping
+            elementId: 'element-control',
             description: 'Create a new component with custom configuration',
             parameters: {
               type: 'object',
@@ -164,9 +164,9 @@ export function createModule(env: IAxonEnvironmentV2) {
           }
         }
       });
-      
+
       // Create action-definition facet for createBox
-      deltas.push({
+      (this as any).addOperation({
         type: 'addFacet',
         facet: {
           id: `action-def-${targetId}-createBox`,
@@ -187,8 +187,6 @@ export function createModule(env: IAxonEnvironmentV2) {
           }
         }
       });
-      
-      return deltas;
     }
   }
   
