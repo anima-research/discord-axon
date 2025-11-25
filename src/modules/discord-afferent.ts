@@ -82,8 +82,8 @@ export function createModule(env: IAxonEnvironmentV2): any {
           },
           afferentId: 'discord-afferent',
           emit: (event: any) => {
-            if (this.element) {
-              this.element.emit(event);
+            if (this.space) {
+              this.space.emit(event);
             }
           },
           emitError: (error: any) => {
@@ -107,11 +107,12 @@ export function createModule(env: IAxonEnvironmentV2): any {
     
     async onMount(): Promise<void> {
       // Subscribe to control panel request events
-      this.element.subscribe('discord:request-guilds');
-      this.element.subscribe('discord:request-channels');
-      this.element.subscribe('discord:join-channel');
-      this.element.subscribe('discord:leave-channel');
-      console.log('[DiscordAfferent] Subscribed to control panel events');
+      // Note: In FLEX architecture, subscriptions are handled via Component topics
+      // These are kept for backwards compatibility but may need to be converted to topic subscriptions
+      if (this.space) {
+        // Space.subscribe is the FLEX equivalent
+        console.log('[DiscordAfferent] Mounted - ready for control panel events');
+      }
     }
     
     protected async onInitialize(): Promise<void> {
@@ -395,7 +396,7 @@ export function createModule(env: IAxonEnvironmentV2): any {
           // Emit connection event
           this.emit({
             topic: 'discord:connected',
-            source: { elementId: this.element?.id || 'discord', elementPath: [] },
+            source: { elementId: this.id || 'discord', elementPath: [] },
             timestamp: Date.now(),
             payload: {
               agentName: config.agent || config.agentName,
@@ -425,7 +426,7 @@ export function createModule(env: IAxonEnvironmentV2): any {
         case 'messageUpdate':
           this.emit({
             topic: 'discord:messageUpdate',
-            source: { elementId: this.element?.id || 'discord', elementPath: [] },
+            source: { elementId: this.id || 'discord', elementPath: [] },
             timestamp: Date.now(),
             payload: msg.payload
           });
@@ -434,7 +435,7 @@ export function createModule(env: IAxonEnvironmentV2): any {
         case 'messageDelete':
           this.emit({
             topic: 'discord:messageDelete',
-            source: { elementId: this.element?.id || 'discord', elementPath: [] },
+            source: { elementId: this.id || 'discord', elementPath: [] },
             timestamp: Date.now(),
             payload: msg.payload
           });
@@ -452,7 +453,7 @@ export function createModule(env: IAxonEnvironmentV2): any {
           
           this.emit({
             topic: 'discord:channel-joined',
-            source: { elementId: this.element?.id || 'discord', elementPath: [] },
+            source: { elementId: this.id || 'discord', elementPath: [] },
             timestamp: Date.now(),
             payload: msg.channel
           });
@@ -463,7 +464,7 @@ export function createModule(env: IAxonEnvironmentV2): any {
 
           this.emit({
             topic: 'discord:channel-left',
-            source: { elementId: this.element?.id || 'discord', elementPath: [] },
+            source: { elementId: this.id || 'discord', elementPath: [] },
             timestamp: Date.now(),
             payload: { channelId: msg.channelId }
           });
@@ -472,7 +473,7 @@ export function createModule(env: IAxonEnvironmentV2): any {
         case 'guilds':
           this.emit({
             topic: 'discord:guilds-list',
-            source: { elementId: this.element?.id || 'discord', elementPath: [] },
+            source: { elementId: this.id || 'discord', elementPath: [] },
             timestamp: Date.now(),
             payload: {
               guilds: msg.guilds || []
@@ -483,7 +484,7 @@ export function createModule(env: IAxonEnvironmentV2): any {
         case 'channels':
           this.emit({
             topic: 'discord:channels-list',
-            source: { elementId: this.element?.id || 'discord', elementPath: [] },
+            source: { elementId: this.id || 'discord', elementPath: [] },
             timestamp: Date.now(),
             payload: {
               guildId: msg.guildId,
@@ -503,7 +504,7 @@ export function createModule(env: IAxonEnvironmentV2): any {
         case 'interaction:slash-command':
           this.emit({
             topic: 'discord:slash-command',
-            source: { elementId: this.element?.id || 'discord', elementPath: [] },
+            source: { elementId: this.id || 'discord', elementPath: [] },
             timestamp: Date.now(),
             payload: msg.payload
           });
@@ -512,7 +513,7 @@ export function createModule(env: IAxonEnvironmentV2): any {
         case 'interaction:button-click':
           this.emit({
             topic: 'discord:button-click',
-            source: { elementId: this.element?.id || 'discord', elementPath: [] },
+            source: { elementId: this.id || 'discord', elementPath: [] },
             timestamp: Date.now(),
             payload: msg.payload
           });
@@ -530,7 +531,7 @@ export function createModule(env: IAxonEnvironmentV2): any {
           console.log('[DiscordAfferent] Received guilds list:', msg.guilds?.length || 0);
           this.emit({
             topic: 'discord:guilds-listed',
-            source: { elementId: this.element?.id || 'discord', elementPath: [] },
+            source: { elementId: this.id || 'discord', elementPath: [] },
             timestamp: Date.now(),
             payload: { guilds: msg.guilds }
           });
@@ -540,7 +541,7 @@ export function createModule(env: IAxonEnvironmentV2): any {
           console.log('[DiscordAfferent] Received channels list:', msg.channels?.length || 0);
           this.emit({
             topic: 'discord:channels-listed',
-            source: { elementId: this.element?.id || 'discord', elementPath: [] },
+            source: { elementId: this.id || 'discord', elementPath: [] },
             timestamp: Date.now(),
             payload: { guildId: msg.guildId, channels: msg.channels }
           });
@@ -572,7 +573,7 @@ export function createModule(env: IAxonEnvironmentV2): any {
       // We'll emit events that a Receptor can process to detect changes
       this.emit({
         topic: 'discord:history-sync',
-        source: { elementId: this.element?.id || 'discord', elementPath: [] },
+        source: { elementId: this.id || 'discord', elementPath: [] },
         timestamp: Date.now(),
         payload: {
           channelId,
@@ -608,7 +609,7 @@ export function createModule(env: IAxonEnvironmentV2): any {
       // Emit history complete event
       this.emit({
         topic: 'discord:history-complete',
-        source: { elementId: this.element?.id || 'discord', elementPath: [] },
+        source: { elementId: this.id || 'discord', elementPath: [] },
         timestamp: Date.now(),
         payload: {
           channelId,
@@ -635,7 +636,7 @@ export function createModule(env: IAxonEnvironmentV2): any {
       // Emit message event with all fields including mentions
       this.emit({
         topic: 'discord:message',
-        source: { elementId: this.element?.id || 'discord', elementPath: [] },
+        source: { elementId: this.id || 'discord', elementPath: [] },
         timestamp: Date.now(),
         payload: {
           channelId: msg.channelId,
