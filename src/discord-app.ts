@@ -980,31 +980,31 @@ export class DiscordApplication implements ConnectomeApplication {
       console.log('✅ Found existing Discord control panel component');
     }
 
-    // Check for element-control component
-    let existingElementControlComponent = space.getComponentById('element-control:ElementControlComponent');
+    // Check for component-factory component
+    let existingComponentFactoryComponent = space.getComponentById('component-factory:ComponentFactoryComponent');
 
-    if (!existingElementControlComponent) {
-      console.log('🎮 Creating Element control panel component');
-      
+    if (!existingComponentFactoryComponent) {
+      console.log('🎮 Creating Component factory panel');
+
       space.emit({
         topic: 'component:add',
         source: space.getRef(),
         timestamp: Date.now(),
         payload: {
-          componentType: 'ElementControlComponent',
-          componentId: 'element-control:ElementControlComponent',
+          componentType: 'ComponentFactoryComponent',
+          componentId: 'component-factory:ComponentFactoryComponent',
           config: {
             _axonMetadata: {
-              moduleUrl: `http://localhost:${modulePort}/modules/element-control/module`,
-              manifestUrl: `http://localhost:${modulePort}/modules/element-control/manifest`
+              moduleUrl: `http://localhost:${modulePort}/modules/component-factory/module`,
+              manifestUrl: `http://localhost:${modulePort}/modules/component-factory/manifest`
             }
           }
         }
       });
-      
+
       await new Promise(resolve => setTimeout(resolve, 100));
     } else {
-      console.log('✅ Found existing Element control panel');
+      console.log('✅ Found existing Component factory panel');
     }
     
     console.log('✅ Discord application initialized');

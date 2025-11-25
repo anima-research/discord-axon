@@ -167,32 +167,30 @@ class CombinedDiscordAxonServer {
       }
     });
     
-    // Register element-control module
-    await this.moduleServer.addModule('element-control', {
-      name: 'element-control',
-      path: join(modulesDir, 'element-control.ts'),
+    // Register component-factory module
+    await this.moduleServer.addModule('component-factory', {
+      name: 'component-factory',
+      path: join(modulesDir, 'component-factory.ts'),
       manifest: {
-        name: 'ElementControlComponent',
+        name: 'ComponentFactoryComponent',
         version: '1.0.0',
-        description: 'Element creation and management control panel',
-        componentClass: 'ElementControlComponent',
+        description: 'Dynamic component creation control panel',
+        componentClass: 'ComponentFactoryComponent',
         moduleType: 'function',
         exports: {
-          receptors: ['ElementControlActionsReceptor']
+          receptors: ['ComponentFactoryActionsReceptor']
         },
         actions: {
-          'createElement': {
-            description: 'Create a new element with custom configuration',
+          'createComponent': {
+            description: 'Create a new component with custom configuration',
             parameters: {
-              elementId: { type: 'string', required: true },
-              name: { type: 'string', required: true },
-              elementType: { type: 'string', required: false },
-              componentType: { type: 'string', required: false },
-              componentConfig: { type: 'object', required: false }
+              componentId: { type: 'string', required: false },
+              componentType: { type: 'string', required: true },
+              config: { type: 'object', required: false }
             }
           },
           'createBox': {
-            description: 'Create a new box element with an agent',
+            description: 'Create a new box agent with the given name',
             parameters: {
               boxName: { type: 'string', required: true }
             }

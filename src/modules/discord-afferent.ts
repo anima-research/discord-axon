@@ -37,8 +37,6 @@ interface DiscordCommand {
   ephemeral?: boolean;
 }
 
-// Export flag to signal this is an afferent module
-export const afferents = ['DiscordAfferent'];
 
 export function createModule(env: IAxonEnvironmentV2): any {
   const { BaseAfferent, WebSocket, persistent, external, persistable } = env;
@@ -832,9 +830,7 @@ export function createModule(env: IAxonEnvironmentV2): any {
   }
   
   // Must return AFTER the class definition (decorators mess with the scope)
-  const result = {
-    afferents: { DiscordAfferent }
+  return {
+    components: { DiscordAfferent }
   };
-  
-  return result;
 }

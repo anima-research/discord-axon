@@ -748,7 +748,7 @@ export function createModule(env: IAxonEnvironmentV2): typeof env.ControlPanelCo
     }
 
     // ============================================
-    // Discord Element Lookup
+    // Discord Component Lookup
     // ============================================
 
     /**
@@ -1055,8 +1055,8 @@ export function createModule(env: IAxonEnvironmentV2): typeof env.ControlPanelCo
   }
 
   return {
-    component: DiscordControlPanelComponent,
-    receptors: {
+    components: {
+      DiscordControlPanelComponent,
       ControlPanelActionsReceptor,
       PanelScopeReceptor,
       DiscordResultsReceptor
