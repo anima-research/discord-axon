@@ -16,6 +16,7 @@ import { AgentEffector } from 'connectome-ts/src/agent/agent-effector';
 import { ActionEffector } from 'connectome-ts/src/spaces/action-effector';
 import { ContextTransform } from 'connectome-ts/src/hud/context-transform';
 import { ComponentManager } from 'connectome-ts/src/spaces/component-manager';
+import { AxonLoaderComponent } from 'connectome-ts/src/components/axon-loader';
 import type { Facet, ReadonlyVEILState } from 'connectome-ts/src';
 import { updateStateFacets } from 'connectome-ts/src/helpers/factories';
 
@@ -953,58 +954,28 @@ export class DiscordApplication implements ConnectomeApplication {
       console.log('✅ Found existing Box Dispenser component');
     }
 
-    // Check for discord-control component
-    let existingControlComponent = space.getComponentById('discord-control:DiscordControlPanelComponent');
+    // Load discord-control-panel module via AxonLoader
+    let existingControlLoader = space.getComponentById('axon-loader:discord-control-panel');
 
-    if (!existingControlComponent) {
-      console.log('📋 Creating Discord control panel component');
-      
-      space.emit({
-        topic: 'component:add',
-        source: space.getRef(),
-        timestamp: Date.now(),
-        payload: {
-          componentType: 'DiscordControlPanelComponent',
-          componentId: 'discord-control:DiscordControlPanelComponent',
-          config: {
-            _axonMetadata: {
-              moduleUrl: `http://localhost:${modulePort}/modules/discord-control-panel/module`,
-              manifestUrl: `http://localhost:${modulePort}/modules/discord-control-panel/manifest`
-            }
-          }
-        }
-      });
-      
-      await new Promise(resolve => setTimeout(resolve, 100));
+    if (!existingControlLoader) {
+      console.log('📋 Loading Discord control panel module');
+      const controlPanelLoader = new AxonLoaderComponent();
+      space.addComponent(controlPanelLoader, 'axon-loader:discord-control-panel');
+      await controlPanelLoader.connect(`axon://localhost:${modulePort}/modules/discord-control-panel/manifest`);
     } else {
-      console.log('✅ Found existing Discord control panel component');
+      console.log('✅ Found existing Discord control panel loader');
     }
 
-    // Check for component-factory component
-    let existingComponentFactoryComponent = space.getComponentById('component-factory:ComponentFactoryComponent');
+    // Load component-factory module via AxonLoader
+    let existingFactoryLoader = space.getComponentById('axon-loader:component-factory');
 
-    if (!existingComponentFactoryComponent) {
-      console.log('🎮 Creating Component factory panel');
-
-      space.emit({
-        topic: 'component:add',
-        source: space.getRef(),
-        timestamp: Date.now(),
-        payload: {
-          componentType: 'ComponentFactoryComponent',
-          componentId: 'component-factory:ComponentFactoryComponent',
-          config: {
-            _axonMetadata: {
-              moduleUrl: `http://localhost:${modulePort}/modules/component-factory/module`,
-              manifestUrl: `http://localhost:${modulePort}/modules/component-factory/manifest`
-            }
-          }
-        }
-      });
-
-      await new Promise(resolve => setTimeout(resolve, 100));
+    if (!existingFactoryLoader) {
+      console.log('🎮 Loading Component factory module');
+      const componentFactoryLoader = new AxonLoaderComponent();
+      space.addComponent(componentFactoryLoader, 'axon-loader:component-factory');
+      await componentFactoryLoader.connect(`axon://localhost:${modulePort}/modules/component-factory/manifest`);
     } else {
-      console.log('✅ Found existing Component factory panel');
+      console.log('✅ Found existing Component factory loader');
     }
     
     console.log('✅ Discord application initialized');
@@ -1031,6 +1002,8 @@ export class DiscordApplication implements ConnectomeApplication {
     registry.register('AgentEffector', AgentEffector);
     registry.register('ActionEffector', ActionEffector);
     registry.register('ContextTransform', ContextTransform);
+
+    // AxonLoaderComponent is registered in core-components.ts
 
     return registry;
   }

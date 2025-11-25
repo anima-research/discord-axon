@@ -6,7 +6,7 @@
  */
 
 // Import types
-import type { IAxonEnvironmentV2 } from 'connectome-ts/src/axon/interfaces-v2';
+import type { IAxonEnvironment } from 'connectome-ts/src/axon/interfaces';
 import type { IPersistentMetadata } from '@connectome/axon-interfaces';
 import type { SpaceEvent } from 'connectome-ts/src/spaces/types';
 
@@ -36,7 +36,7 @@ interface CategoryInfo {
 }
 
 // Module factory function
-export function createModule(env: IAxonEnvironmentV2): typeof env.ControlPanelComponent {
+export function createModule(env: IAxonEnvironment): typeof env.ControlPanelComponent {
   const {
     ControlPanelComponent,
     persistent,

@@ -8,7 +8,7 @@
  * - Does NOT touch VEIL state directly
  */
 
-import type { IAxonEnvironmentV2 } from 'connectome-ts/src/axon/interfaces-v2';
+import type { IAxonEnvironment } from 'connectome-ts/src/axon/interfaces';
 
 interface DiscordConfig {
   serverUrl: string;
@@ -38,7 +38,7 @@ interface DiscordCommand {
 }
 
 
-export function createModule(env: IAxonEnvironmentV2): any {
+export function createModule(env: IAxonEnvironment): any {
   const { BaseAfferent, WebSocket, persistent, external, persistable } = env;
   
   @persistable(1)
