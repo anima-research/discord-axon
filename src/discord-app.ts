@@ -443,6 +443,9 @@ class DiscordInfrastructureTransform extends Component {
   // Discord configuration (injected via component config)
   private discordConfig?: any;
 
+  // Agent system prompts to emit as ambient facets
+  private agentSystemPrompts?: Array<{ agentName: string; systemPrompt: string }>;
+
   // Track which components we're waiting for (simplified for merged receptor)
   // Note: AgentComponent is created later in setupDiscordAgent, not in infrastructure
   private requiredComponents = new Set([
@@ -488,6 +491,9 @@ class DiscordInfrastructureTransform extends Component {
     console.log('[DiscordInfrastructure] All components ready - creating DiscordAfferent via component:add');
     this.hasTriggered = true;
 
+    // Emit system prompts as ambient facets for each agent
+    this.emitSystemPromptFacets();
+
     this.emit({
       topic: 'component:add',
       timestamp: Date.now(),
@@ -508,6 +514,34 @@ class DiscordInfrastructureTransform extends Component {
         }
       }
     });
+  }
+
+  /**
+   * Emit ambient facets for agent system prompts
+   * Uses directly-provided config rather than reading from VEIL facets
+   */
+  private emitSystemPromptFacets(): void {
+    if (!this.agentSystemPrompts?.length) {
+      console.log('[DiscordInfrastructure] No agent system prompts configured');
+      return;
+    }
+
+    for (const { agentName, systemPrompt } of this.agentSystemPrompts) {
+      if (systemPrompt) {
+        console.log(`[DiscordInfrastructure] Emitting system prompt for agent: ${agentName}`);
+
+        this.addOperation({
+          type: 'addFacet',
+          facet: {
+            id: `system-prompt:${agentName}`,
+            type: 'ambient',
+            content: systemPrompt
+            // Note: No scope - system prompt is always visible
+            // For multi-agent with scoped prompts, activation should create scope-agent:X facet
+          }
+        });
+      }
+    }
   }
 }
 
@@ -819,7 +853,13 @@ export class DiscordApplication implements ConnectomeApplication {
       payload: {
         componentType: 'DiscordInfrastructureTransform',
         componentId: 'discord:DiscordInfrastructureTransform',
-        config: { discordConfig }
+        config: {
+          discordConfig,
+          // Pass agent system prompts directly so they can be emitted as ambient facets
+          agentSystemPrompts: [
+            { agentName: this.config.agentName, systemPrompt: this.config.systemPrompt }
+          ]
+        }
       }
     });
 
