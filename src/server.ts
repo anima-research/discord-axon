@@ -317,11 +317,13 @@ class CombinedDiscordAxonServer {
 
     this.connections.set(connectionId, connection);
 
-    // Send success with bot user ID
+    // Send success with bot user info
     ws.send(JSON.stringify({
       type: 'authenticated',
       connectionId,
-      botUserId: this.discord.user?.id
+      botUserId: this.discord.user?.id,
+      botUsername: this.discord.user?.username,
+      botDisplayName: this.discord.user?.displayName || this.discord.user?.username
     }));
 
     console.log(`[Server] Authenticated connection: ${connectionId}`);

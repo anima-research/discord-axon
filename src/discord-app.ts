@@ -78,6 +78,20 @@ class DiscordMessageReceptor extends Component {
       }
     }
 
+    // Emit identity system prompt with actual bot name from Discord
+    const botName = payload.botDisplayName || payload.botUsername || payload.agentName;
+    if (botName) {
+      console.log(`[DiscordMessageReceptor] Emitting identity facet for bot: ${botName}`);
+      this.addOperation({
+        type: 'addFacet',
+        facet: {
+          id: 'system-prompt:identity',
+          type: 'ambient',
+          content: `You are connected to Discord as ${botName}.`
+        }
+      });
+    }
+
     // Also create the connection event facet
     this.addOperation({
       type: 'addFacet',
@@ -443,7 +457,8 @@ class DiscordInfrastructureTransform extends Component {
   // Discord configuration (injected via component config)
   private discordConfig?: any;
 
-  // Agent system prompts to emit as ambient facets
+  // Agent system prompts to emit as ambient facets (behavioral instructions without identity)
+  // Identity is emitted separately when Discord connects
   private agentSystemPrompts?: Array<{ agentName: string; systemPrompt: string }>;
 
   // Track which components we're waiting for (simplified for merged receptor)
@@ -517,8 +532,8 @@ class DiscordInfrastructureTransform extends Component {
   }
 
   /**
-   * Emit ambient facets for agent system prompts
-   * Uses directly-provided config rather than reading from VEIL facets
+   * Emit system prompt facets (behavioral instructions without identity)
+   * Identity facet is emitted separately when Discord connects
    */
   private emitSystemPromptFacets(): void {
     if (!this.agentSystemPrompts?.length) {
@@ -536,8 +551,6 @@ class DiscordInfrastructureTransform extends Component {
             id: `system-prompt:${agentName}`,
             type: 'ambient',
             content: systemPrompt
-            // Note: No scope - system prompt is always visible
-            // For multi-agent with scoped prompts, activation should create scope-agent:X facet
           }
         });
       }

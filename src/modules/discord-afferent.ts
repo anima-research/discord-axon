@@ -400,6 +400,8 @@ export function createModule(env: IAxonEnvironment): any {
               agentName: config.agent || config.agentName,
               guildId: config.guild || config.guildId,
               botUserId: msg.botUserId,
+              botUsername: msg.botUsername,
+              botDisplayName: msg.botDisplayName,
               reconnect: this.connectionAttempts > 1
             }
           });
