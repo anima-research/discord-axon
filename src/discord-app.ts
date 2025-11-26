@@ -12,9 +12,6 @@ import { AgentComponent } from 'connectome-ts/src/agent/agent-component';
 import { persistable, persistent } from 'connectome-ts/src/persistence/decorators';
 import { Component } from 'connectome-ts/src/spaces/component';
 import { SpaceEvent, ExecutionContext } from 'connectome-ts/src/spaces/types';
-import { AgentEffector } from 'connectome-ts/src/agent/agent-effector';
-import { ActionEffector } from 'connectome-ts/src/spaces/action-effector';
-import { ContextTransform } from 'connectome-ts/src/hud/context-transform';
 import { ComponentManager } from 'connectome-ts/src/spaces/component-manager';
 import { AxonLoaderComponent } from 'connectome-ts/src/components/axon-loader';
 import type { Facet, ReadonlyVEILState } from 'connectome-ts/src';
@@ -447,10 +444,10 @@ class DiscordInfrastructureTransform extends Component {
   private discordConfig?: any;
 
   // Track which components we're waiting for (simplified for merged receptor)
+  // Note: AgentComponent is created later in setupDiscordAgent, not in infrastructure
   private requiredComponents = new Set([
     'DiscordMessageReceptor',
     'DiscordEffector',
-    'AgentEffector',
     'ActionEffector',
     'ContextTransform'
   ]);
@@ -856,18 +853,8 @@ export class DiscordApplication implements ConnectomeApplication {
       }
     });
 
-    // Add AgentEffector, ActionEffector, and ContextTransform
-    space.emit({
-      topic: 'component:add',
-      source: space.getRef(),
-      timestamp: Date.now(),
-      payload: {
-        componentType: 'AgentEffector',
-        componentId: 'discord:AgentEffector',
-        config: { agentElementId: 'discord-agent' } // Legacy config, but still used for ID lookup
-      }
-    });
-
+    // Add ActionEffector and ContextTransform
+    // Note: AgentComponent is created later in setupDiscordAgent with proper config
     space.emit({
       topic: 'component:add',
       source: space.getRef(),
@@ -998,12 +985,8 @@ export class DiscordApplication implements ConnectomeApplication {
     // Merged FLEX effector (handles auto-join, typing, speech)
     registry.register('DiscordEffector', DiscordEffector);
 
-    // Core components
-    registry.register('AgentEffector', AgentEffector);
-    registry.register('ActionEffector', ActionEffector);
-    registry.register('ContextTransform', ContextTransform);
-
-    // AxonLoaderComponent is registered in core-components.ts
+    // Core components (AgentComponent, ActionEffector, ContextTransform, AxonLoaderComponent
+    // are registered in connectome-ts core-components.ts)
 
     return registry;
   }
