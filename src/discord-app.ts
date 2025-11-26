@@ -966,34 +966,6 @@ export class DiscordApplication implements ConnectomeApplication {
     // Subscribe to agent response events
     space.subscribe('agent:frame-ready');
 
-    // Check for box-dispenser component
-    let existingBoxComponent = space.getComponentById('box-dispenser:AgentComponent');
-
-    if (!existingBoxComponent) {
-      console.log('📦 Creating Box Dispenser component');
-      
-      const boxAgentConfig = {
-        name: 'Box Dispenser',
-        systemPrompt: 'You are a helpful box dispenser. You dispense boxes. When asked, you cheerfully dispense a box and describe it.',
-        autoActionRegistration: true
-      };
-    
-      space.emit({
-        topic: 'component:add',
-        source: space.getRef(),
-        timestamp: Date.now(),
-        payload: {
-          componentType: 'AgentComponent',
-          componentId: 'box-dispenser:AgentComponent',
-          config: { agentConfig: boxAgentConfig }
-        }
-      });
-      
-      await new Promise(resolve => setTimeout(resolve, 100));
-    } else {
-      console.log('✅ Found existing Box Dispenser component');
-    }
-
     // Load discord-control-panel module via AxonLoader
     let existingControlLoader = space.getComponentById('axon-loader:discord-control-panel');
 
