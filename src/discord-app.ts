@@ -1,7 +1,7 @@
 /**
  * Discord Application for Connectome
  *
- * FLEX Architecture - All components extend Component directly with explicit priorities.
+ * FLEX Architecture - All components extend Component directly with explicit constraints.
  */
 
 import { ConnectomeApplication } from 'connectome-ts/src/host/types';
@@ -16,6 +16,7 @@ import { ComponentManager } from 'connectome-ts/src/spaces/component-manager';
 import { AxonLoaderComponent } from 'connectome-ts/src/components/axon-loader';
 import type { Facet, ReadonlyVEILState } from 'connectome-ts/src';
 import { updateStateFacets } from 'connectome-ts/src/helpers/factories';
+import { priorityConstraint, ComponentPriority } from 'connectome-ts/src/spaces/constraints';
 
 export interface DiscordAppConfig {
   agentName: string;
@@ -39,10 +40,10 @@ export interface DiscordAppConfig {
  * - discord:messageUpdate → message edit handling
  * - discord:messageDelete → message deletion handling
  *
- * Priority 100: Standard receptor priority
+ * Constraint: priority 100 (Standard receptor priority)
  */
 class DiscordMessageReceptor extends Component {
-  priority = 100;
+  constraints = [priorityConstraint(ComponentPriority.RECEPTOR)];
 
   execute(context: ExecutionContext): void {
     const { event, state } = context;
@@ -449,10 +450,10 @@ class DiscordMessageReceptor extends Component {
  *
  * Watches for required components to be mounted and triggers DiscordAfferent creation.
  *
- * Priority 150: Early transform priority (after receptors at 100)
+ * Constraint: priority 150 (Early transform priority, after receptors at 100)
  */
 class DiscordInfrastructureTransform extends Component {
-  priority = 150;
+  constraints = [priorityConstraint(150)];
 
   // Discord configuration (injected via component config)
   private discordConfig?: any;
@@ -566,10 +567,10 @@ class DiscordInfrastructureTransform extends Component {
  * - Send typing indicators when agent activates
  * - Send agent speech to Discord
  *
- * Priority 300: Standard effector priority
+ * Constraint: priority 300 (Standard effector priority)
  */
 class DiscordEffector extends Component {
-  priority = 300;
+  constraints = [priorityConstraint(ComponentPriority.EFFECTOR)];
 
   private discordAfferent?: any;
   private channels: string[] = [];
