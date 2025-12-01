@@ -353,10 +353,11 @@ class DiscordMessageReceptor extends Component {
         });
       }
 
+      // Use stable ID so reconnects update existing history instead of creating duplicates
       this.addOperation({
         type: 'addFacet',
         facet: {
-          id: `discord-history-${channelId}-${Date.now()}`,
+          id: `discord-history-${channelId}`,
           type: 'event',
           displayName: 'discord-history',
           state: { source: 'discord', eventType: 'discord-history-dump', metadata: { channelId, channelName, messageCount: newMessages.length } },
@@ -624,23 +625,10 @@ class DiscordEffector extends Component {
   }
 
   private handleConnected(state: ReadonlyVEILState): void {
-    if (!this.discordAfferent || !this.channels || this.channels.length === 0) return;
-
-    console.log('🤖 Discord connected! Auto-joining channels:', this.channels);
-
-    for (const channelId of this.channels) {
-      console.log(`📢 Calling join for channel: ${channelId}`);
-
-      if (this.discordAfferent.join && typeof this.discordAfferent.join === 'function') {
-        this.discordAfferent.join({ channelId }).catch((err: any) =>
-          console.error(`Failed to join channel ${channelId}:`, err)
-        );
-      } else if (this.discordAfferent.actions?.has('join')) {
-        this.discordAfferent.actions.get('join')({ channelId }).catch((err: any) =>
-          console.error(`Failed to join channel ${channelId}:`, err)
-        );
-      }
-    }
+    // NOTE: Auto-join is handled by DiscordAfferent itself when authenticated.
+    // This effector no longer auto-joins to avoid duplicate join commands.
+    // The afferent reads autoJoinChannels from component state and joins there.
+    console.log('🤖 Discord connected! (auto-join handled by DiscordAfferent)');
   }
 
   private handleActivation(facet: Facet, state: ReadonlyVEILState): void {
