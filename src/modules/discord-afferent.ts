@@ -578,6 +578,8 @@ export function createModule(env: IAxonEnvironment): any {
         payload: {
           channelId,
           channelName,
+          guildId,
+          guildName,
           messages: messages.map((m: any) => ({
             messageId: m.messageId,
             content: m.content,

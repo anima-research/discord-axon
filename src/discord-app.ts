@@ -232,7 +232,7 @@ class DiscordMessageReceptor extends Component {
   }
 
   private handleHistorySync(event: SpaceEvent, state: ReadonlyVEILState): void {
-    const { channelId, channelName, messages } = event.payload as any;
+    const { channelId, channelName, guildId, guildName, messages } = event.payload as any;
 
     console.log(`[DiscordMessageReceptor] Syncing ${messages.length} messages for channel ${channelId}`);
 
@@ -330,7 +330,23 @@ class DiscordMessageReceptor extends Component {
 
     // Create a single parent facet for new history messages
     if (newMessages.length > 0) {
-      const children: any[] = [];
+      const historyFacetId = `discord-history-${channelId}`;
+
+      // Start with metadata children so agent knows which channel/server this is
+      const children: any[] = [
+        {
+          id: `${historyFacetId}-channel`,
+          type: 'metadata',
+          displayName: 'channel',
+          content: `#${channelName || 'unknown'}`
+        },
+        {
+          id: `${historyFacetId}-server`,
+          type: 'metadata',
+          displayName: 'server',
+          content: guildName || 'unknown'
+        }
+      ];
 
       for (const msg of newMessages) {
         const speechFacet = {
@@ -357,11 +373,11 @@ class DiscordMessageReceptor extends Component {
       this.addOperation({
         type: 'addFacet',
         facet: {
-          id: `discord-history-${channelId}`,
+          id: historyFacetId,
           type: 'event',
           displayName: 'discord-history',
-          state: { source: 'discord', eventType: 'discord-history-dump', metadata: { channelId, channelName, messageCount: newMessages.length } },
-          attributes: { channelId, messageCount: newMessages.length },
+          state: { source: 'discord', eventType: 'discord-history-dump', metadata: { channelId, channelName, guildId, guildName, messageCount: newMessages.length } },
+          attributes: { channelId, guildId, messageCount: newMessages.length },
           children
         }
       });
