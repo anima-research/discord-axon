@@ -16,7 +16,12 @@ import { ComponentManager } from 'connectome-ts/src/spaces/component-manager';
 import { AxonLoaderComponent } from 'connectome-ts/src/components/axon-loader';
 import type { Facet, ReadonlyVEILState } from 'connectome-ts/src';
 import { updateStateFacets } from 'connectome-ts/src/helpers/factories';
-import { priorityConstraint, ComponentPriority } from 'connectome-ts/src/spaces/constraints';
+import {
+  priorityConstraint,
+  ComponentPriority,
+  afterComponentType,
+  beforeComponentType
+} from 'connectome-ts/src/spaces/constraints';
 
 export interface DiscordAppConfig {
   agentName: string;
@@ -40,10 +45,15 @@ export interface DiscordAppConfig {
  * - discord:messageUpdate → message edit handling
  * - discord:messageDelete → message deletion handling
  *
- * Constraint: priority 100 (Standard receptor priority)
+ * Constraints:
+ * - Priority 100 (standard receptor)
+ * - Must run before DiscordEffector (effector reads our facets from frame.deltas)
  */
 class DiscordMessageReceptor extends Component {
-  constraints = [priorityConstraint(ComponentPriority.RECEPTOR)];
+  constraints = [
+    priorityConstraint(ComponentPriority.RECEPTOR),
+    beforeComponentType('DiscordEffector')
+  ];
 
   execute(context: ExecutionContext): void {
     const { event, state } = context;
@@ -467,10 +477,17 @@ class DiscordMessageReceptor extends Component {
  *
  * Watches for required components to be mounted and triggers DiscordAfferent creation.
  *
- * Constraint: priority 150 (Early transform priority, after receptors at 100)
+ * Constraints:
+ * - Priority 150 (early transform, between receptor and standard transforms)
+ * - Must run after DiscordMessageReceptor (receptor should be ready first)
+ * - Must run before DiscordEffector (we create DiscordAfferent that effector needs)
  */
 class DiscordInfrastructureTransform extends Component {
-  constraints = [priorityConstraint(150)];
+  constraints = [
+    priorityConstraint(150),
+    afterComponentType('DiscordMessageReceptor'),
+    beforeComponentType('DiscordEffector')
+  ];
 
   // Discord configuration (injected via component config)
   private discordConfig?: any;
@@ -584,10 +601,17 @@ class DiscordInfrastructureTransform extends Component {
  * - Send typing indicators when agent activates
  * - Send agent speech to Discord
  *
- * Constraint: priority 300 (Standard effector priority)
+ * Constraints:
+ * - Priority 300 (standard effector)
+ * - Must run after DiscordMessageReceptor (we read discord-connected, agent-activation facets from frame.deltas)
+ * - Must run after AgentComponent (we read speech facets the agent creates)
  */
 class DiscordEffector extends Component {
-  constraints = [priorityConstraint(ComponentPriority.EFFECTOR)];
+  constraints = [
+    priorityConstraint(ComponentPriority.EFFECTOR),
+    afterComponentType('DiscordMessageReceptor'),
+    afterComponentType('AgentComponent')
+  ];
 
   private discordAfferent?: any;
   private channels: string[] = [];
@@ -832,7 +856,11 @@ export class DiscordApplication implements ConnectomeApplication {
   
   async createSpace(hostRegistry?: Map<string, any>, lifecycleId?: string, spaceId?: string): Promise<{ space: Space; veilState: VEILStateManager }> {
     const veilState = new VEILStateManager();
-    const space = new Space(veilState, hostRegistry, lifecycleId, spaceId);
+    // Enable multi-constraint ordering to validate component dependencies
+    const space = new Space(veilState, hostRegistry, lifecycleId, spaceId, {
+      orderingStrategy: 'multi-constraint',
+      multiConstraintOptions: { verbose: true }
+    });
     return { space, veilState };
   }
   
