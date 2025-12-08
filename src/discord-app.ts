@@ -857,13 +857,13 @@ Use the "lua" action with Lua code in the content:
 <action name="lua">
 -- Your Lua code here
 local result = discord_send("Hello!")
-log("Message sent:", result)
+print("Message sent:", result)
 </action>
 
 ### Available Functions
 
 **Built-in:**
-  log(...) - Print to console (also available as print)
+  print(...) - Print to console for debugging
   json.encode(value) - Convert value to JSON string
   json.decode(str) - Parse JSON string to value
 
@@ -887,12 +887,12 @@ Chain multiple actions:
 discord_typing()  -- Show typing indicator
 local greeting = "Hello everyone!"
 discord_send(greeting)
-log("Sent greeting:", greeting)
+print("Sent greeting:", greeting)
 </action>
 
 ### Notes
 - Scripts execute synchronously; tool calls block until complete
-- Use log() for debugging - output appears in server console
+- Use print() for debugging - output appears in server console
 - Errors in scripts will be reported back to you`;
 }
 
