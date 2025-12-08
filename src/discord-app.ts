@@ -31,6 +31,7 @@ import {
   ScriptExecutorEffector,
   createToolRegistry,
   ToolRegistry,
+  setGlobalToolRegistry,
   isToolCallFacet,
   createToolCallResultFacet,
 } from 'connectome-ts/src/scripting';
@@ -793,6 +794,108 @@ function createDiscordToolRegistry(): ToolRegistry {
   return registry;
 }
 
+/**
+ * LuaScriptingPromptEmitter - Emits Lua scripting documentation as ambient facet
+ *
+ * This component runs once on mount to inject the Lua scripting system prompt
+ * into the agent's context, so the agent knows about the `lua` action and available tools.
+ *
+ * Constraints:
+ * - Priority 0 (modulator - runs early to set up context)
+ */
+class LuaScriptingPromptEmitter extends Component {
+  constraints = [priorityConstraint(0)];  // Modulator priority
+
+  // Pre-generated prompt content (passed via config as plain string)
+  public promptContent?: string;
+  private emitted = false;
+
+  execute(context: ExecutionContext): void {
+    // Only emit once
+    if (this.emitted) return;
+    this.emitted = true;
+
+    if (!this.promptContent) {
+      console.warn('[LuaScriptingPromptEmitter] No prompt content configured');
+      return;
+    }
+
+    console.log('[LuaScriptingPromptEmitter] Emitting Lua scripting system prompt');
+
+    this.addOperation({
+      type: 'addFacet',
+      facet: {
+        id: 'system-prompt:lua-scripting',
+        type: 'ambient',
+        content: this.promptContent
+      }
+    });
+  }
+}
+
+/**
+ * Generate system prompt describing Lua scripting capability
+ */
+function generateLuaScriptingPrompt(registry: ToolRegistry): string {
+  const toolDocs = registry.getTools().map(tool => {
+    const params = tool.parameters.map(p => {
+      const req = p.required ? '' : '?';
+      return `${p.name}${req}: ${p.type}`;
+    }).join(', ');
+    return `  ${tool.name}(${params}) - ${tool.description}`;
+  }).join('\n');
+
+  return `## Lua Scripting
+
+You have access to a Lua scripting action that allows you to chain multiple operations in a single response.
+This is useful when you need to perform several related actions without waiting for intermediate responses.
+
+### Usage
+
+Use the "lua" action with Lua code in the content:
+
+<action name="lua">
+-- Your Lua code here
+local result = discord_send("Hello!")
+log("Message sent:", result)
+</action>
+
+### Available Functions
+
+**Built-in:**
+  log(...) - Print to console (also available as print)
+  json.encode(value) - Convert value to JSON string
+  json.decode(str) - Parse JSON string to value
+
+**Discord Tools:**
+${toolDocs}
+
+### Examples
+
+Send a message:
+<action name="lua">
+discord_send("Hello from Lua!")
+</action>
+
+Send to specific channel:
+<action name="lua">
+discord_send("1234567890", "Message to specific channel")
+</action>
+
+Chain multiple actions:
+<action name="lua">
+discord_typing()  -- Show typing indicator
+local greeting = "Hello everyone!"
+discord_send(greeting)
+log("Sent greeting:", greeting)
+</action>
+
+### Notes
+- Scripts execute synchronously; tool calls block until complete
+- Use log() for debugging - output appears in server console
+- Errors in scripts will be reported back to you`;
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Application
 // ═══════════════════════════════════════════════════════════════════════════
@@ -817,6 +920,12 @@ export class DiscordApplication implements ConnectomeApplication {
     const botToken = (this.config as any).botToken || '';
     const modulePort = this.config.discord.modulePort || 8080;
 
+    // Create tool registry early so we can generate Lua scripting docs
+    // Use global registry so ScriptExecutorEffector can access it
+    const toolRegistry = createDiscordToolRegistry();
+    setGlobalToolRegistry(toolRegistry);
+    const luaScriptingPrompt = generateLuaScriptingPrompt(toolRegistry);
+
     const discordConfig = {
       host: this.config.discord.host,
       path: '/ws',
@@ -829,6 +938,7 @@ export class DiscordApplication implements ConnectomeApplication {
     };
 
     // Add DiscordReceptor (unified inbound + infrastructure)
+    // Include Lua scripting docs as a system prompt
     space.emit({
       topic: 'component:add',
       source: space.getRef(),
@@ -838,7 +948,10 @@ export class DiscordApplication implements ConnectomeApplication {
         componentId: 'discord:DiscordReceptor',
         config: {
           discordConfig,
-          agentSystemPrompts: [{ agentName: this.config.agentName, systemPrompt: this.config.systemPrompt }]
+          agentSystemPrompts: [
+            { agentName: this.config.agentName, systemPrompt: this.config.systemPrompt },
+            { agentName: 'lua-scripting', systemPrompt: luaScriptingPrompt }
+          ]
         }
       }
     });
@@ -859,10 +972,7 @@ export class DiscordApplication implements ConnectomeApplication {
     space.emit({ topic: 'component:add', source: space.getRef(), timestamp: Date.now(), payload: { componentType: 'ActionEffector', componentId: 'discord:ActionEffector', config: {} } });
     space.emit({ topic: 'component:add', source: space.getRef(), timestamp: Date.now(), payload: { componentType: 'ContextTransform', componentId: 'discord:ContextTransform', config: {} } });
 
-    // Create tool registry with Discord tools
-    const toolRegistry = createDiscordToolRegistry();
-
-    // Add ScriptExecutorEffector for Lua scripting support
+    // Add ScriptExecutorEffector for Lua scripting support (uses global registry)
     space.emit({
       topic: 'component:add',
       source: space.getRef(),
@@ -870,7 +980,7 @@ export class DiscordApplication implements ConnectomeApplication {
       payload: {
         componentType: 'ScriptExecutorEffector',
         componentId: 'discord:ScriptExecutorEffector',
-        config: { toolRegistry }
+        config: {}
       }
     });
 
@@ -883,6 +993,18 @@ export class DiscordApplication implements ConnectomeApplication {
         componentType: 'ToolCallHandler',
         componentId: 'discord:ToolCallHandler',
         config: {}
+      }
+    });
+
+    // Add LuaScriptingPromptEmitter as backup (primary method is via agentSystemPrompts above)
+    space.emit({
+      topic: 'component:add',
+      source: space.getRef(),
+      timestamp: Date.now(),
+      payload: {
+        componentType: 'LuaScriptingPromptEmitter',
+        componentId: 'discord:LuaScriptingPromptEmitter',
+        config: { promptContent: luaScriptingPrompt }
       }
     });
 
@@ -924,6 +1046,7 @@ export class DiscordApplication implements ConnectomeApplication {
     // Lua Scripting components
     registry.register('ScriptExecutorEffector', ScriptExecutorEffector);
     registry.register('ToolCallHandler', ToolCallHandler);
+    registry.register('LuaScriptingPromptEmitter', LuaScriptingPromptEmitter);
     return registry;
   }
 
