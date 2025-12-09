@@ -683,18 +683,23 @@ class ToolCallHandler extends Component {
       channelId = String(channelIdOrMessage);
       message = maybeMessage;
     } else if (typeof channelIdOrMessage === 'string') {
-      // Called as discord_send(message) - use latest channel
+      // Called as discord_send(message) - use latest channel or first joined
       message = channelIdOrMessage;
       channelId = this.getLatestChannelId(state);
-      if (!channelId) throw new Error('No channel context available');
+      if (!channelId) {
+        // Fallback to first joined channel
+        channelId = this.getFirstJoinedChannel(state);
+      }
+      if (!channelId) {
+        throw new Error('No channel context available. Either reply to a Discord message, or specify a channel ID: discord_send(channelId, message)');
+      }
     } else {
       throw new Error('Invalid arguments: expected (message) or (channelId, message)');
     }
 
-    const sendFn = this.discordAfferent.send || this.discordAfferent.actions?.get('send');
-    if (!sendFn) throw new Error('Discord send function not available');
+    if (!this.discordAfferent.send) throw new Error('Discord send function not available');
 
-    await sendFn({ channelId, message });
+    await this.discordAfferent.send({ channelId, message });
     return { sent: true, channelId };
   }
 
@@ -712,32 +717,26 @@ class ToolCallHandler extends Component {
   }
 
   private async handleDiscordJoin(args: unknown[]): Promise<any> {
-    if (!this.discordAfferent) {
+    if (!this.discordAfferent?.join) {
       throw new Error('Discord not connected');
     }
 
     const [channelId] = args;
     if (!channelId) throw new Error('Channel ID required');
 
-    const joinFn = this.discordAfferent.join || this.discordAfferent.actions?.get('join');
-    if (!joinFn) throw new Error('Discord join function not available');
-
-    await joinFn({ channelId: String(channelId) });
+    await this.discordAfferent.join({ channelId: String(channelId) });
     return { joined: true, channelId: String(channelId) };
   }
 
   private async handleDiscordLeave(args: unknown[]): Promise<any> {
-    if (!this.discordAfferent) {
+    if (!this.discordAfferent?.leave) {
       throw new Error('Discord not connected');
     }
 
     const [channelId] = args;
     if (!channelId) throw new Error('Channel ID required');
 
-    const leaveFn = this.discordAfferent.leave || this.discordAfferent.actions?.get('leave');
-    if (!leaveFn) throw new Error('Discord leave function not available');
-
-    await leaveFn({ channelId: String(channelId) });
+    await this.discordAfferent.leave({ channelId: String(channelId) });
     return { left: true, channelId: String(channelId) };
   }
 
@@ -748,6 +747,19 @@ class ToolCallHandler extends Component {
     if (discordMessages.length === 0) return '';
     const latestMessage = discordMessages[discordMessages.length - 1] as any;
     return latestMessage.attributes?.channelId || '';
+  }
+
+  private getFirstJoinedChannel(state: ReadonlyVEILState): string {
+    // Look for component-state facet with joinedChannels
+    for (const facet of state.facets.values()) {
+      if (facet.type === 'component-state') {
+        const componentState = (facet as any).state;
+        if (componentState?.joinedChannels && Array.isArray(componentState.joinedChannels)) {
+          return componentState.joinedChannels[0] || '';
+        }
+      }
+    }
+    return '';
   }
 }
 
@@ -852,12 +864,11 @@ This is useful when you need to perform several related actions without waiting 
 
 ### Usage
 
-Use the "lua" action with Lua code in the content:
+Use the "lua" action with Lua code in the content. Use \`return\` to get results back:
 
 <action name="lua">
--- Your Lua code here
 local result = discord_send("Hello!")
-print("Message sent:", result)
+return result
 </action>
 
 ### Available Functions
@@ -872,28 +883,43 @@ ${toolDocs}
 
 ### Examples
 
-Send a message:
+Send a message to the current channel:
 <action name="lua">
-discord_send("Hello from Lua!")
+local result = discord_send("Hello from Lua!")
+return result
 </action>
 
-Send to specific channel:
+Send to a specific channel:
 <action name="lua">
-discord_send("1234567890", "Message to specific channel")
+local result = discord_send("1234567890", "Hello to specific channel!")
+return result
 </action>
 
 Chain multiple actions:
 <action name="lua">
-discord_typing()  -- Show typing indicator
-local greeting = "Hello everyone!"
-discord_send(greeting)
-print("Sent greeting:", greeting)
+discord_typing()
+local msg1 = discord_send("First message")
+local msg2 = discord_send("Second message")
+return { first = msg1, second = msg2 }
+</action>
+
+Conditional logic:
+<action name="lua">
+local result = discord_send("Testing...")
+if result and result.sent then
+  return discord_send("It worked!")
+else
+  return { error = "Failed to send" }
+end
 </action>
 
 ### Notes
-- Scripts execute synchronously; tool calls block until complete
-- Use print() for debugging - output appears in server console
-- Errors in scripts will be reported back to you`;
+- Tool calls use positional arguments, not tables (e.g., \`discord_send("message")\` not \`discord_send({ message = "..." })\`)
+- Tool calls block until complete, then return their result
+- Use \`return\` to pass results back from the script
+- Errors in scripts will be reported back to you
+- When replying to a Discord message, \`discord_send("message")\` uses that channel automatically
+- If no channel context exists (e.g., activated via control panel), you must specify: \`discord_send(channelId, "message")\``;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1056,5 +1082,11 @@ export class DiscordApplication implements ConnectomeApplication {
 
   async onRestore(space: Space, veilState: VEILStateManager): Promise<void> {
     console.log('♻️ Discord application restored');
+
+    // Re-setup global tool registry after restoration
+    // This is needed because the global registry is cleared on process restart
+    const toolRegistry = createDiscordToolRegistry();
+    setGlobalToolRegistry(toolRegistry);
+    console.log('🔧 Tool registry re-initialized with', toolRegistry.getTools().length, 'tools');
   }
 }
