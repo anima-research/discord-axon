@@ -29,6 +29,8 @@ import {
 // Lua Scripting System
 import {
   ScriptExecutorEffector,
+  ActionResultProcessor,
+  ActivationDecider,
   createToolRegistry,
   ToolRegistry,
   setGlobalToolRegistry,
@@ -641,6 +643,12 @@ class ToolCallHandler extends Component {
               { success: false, error: `Unknown tool: ${toolName}` }
             )
           });
+          // Emit tool-call:completed event to trigger next frame
+          this.emit({
+            topic: 'tool-call:completed',
+            timestamp: Date.now(),
+            payload: { toolCallId, parentScriptId, success: false }
+          });
           return;
       }
 
@@ -655,6 +663,13 @@ class ToolCallHandler extends Component {
         )
       });
 
+      // Emit tool-call:completed event to trigger next frame
+      this.emit({
+        topic: 'tool-call:completed',
+        timestamp: Date.now(),
+        payload: { toolCallId, parentScriptId, success: true }
+      });
+
     } catch (error: any) {
       console.error(`[ToolCallHandler] Tool ${toolName} failed:`, error);
       this.addOperation({
@@ -665,6 +680,12 @@ class ToolCallHandler extends Component {
           parentScriptId,
           { success: false, error: error.message || String(error) }
         )
+      });
+      // Emit tool-call:completed event to trigger next frame
+      this.emit({
+        topic: 'tool-call:completed',
+        timestamp: Date.now(),
+        payload: { toolCallId, parentScriptId, success: false }
       });
     }
   }
@@ -1022,6 +1043,30 @@ export class DiscordApplication implements ConnectomeApplication {
       }
     });
 
+    // Add ActionResultProcessor to emit activation:create events from action-results
+    space.emit({
+      topic: 'component:add',
+      source: space.getRef(),
+      timestamp: Date.now(),
+      payload: {
+        componentType: 'ActionResultProcessor',
+        componentId: 'discord:ActionResultProcessor',
+        config: {}
+      }
+    });
+
+    // Add ActivationDecider to handle semantic events and create agent-activation facets
+    space.emit({
+      topic: 'component:add',
+      source: space.getRef(),
+      timestamp: Date.now(),
+      payload: {
+        componentType: 'ActivationDecider',
+        componentId: 'discord:ActivationDecider',
+        config: {}
+      }
+    });
+
     // Add LuaScriptingPromptEmitter as backup (primary method is via agentSystemPrompts above)
     space.emit({
       topic: 'component:add',
@@ -1069,9 +1114,11 @@ export class DiscordApplication implements ConnectomeApplication {
     registry.register('ComponentManager', ComponentManager);
     registry.register('DiscordReceptor', DiscordReceptor);
     registry.register('DiscordEffector', DiscordEffector);
-    // Lua Scripting components
+    // Lua Scripting components (FLEX architecture)
     registry.register('ScriptExecutorEffector', ScriptExecutorEffector);
     registry.register('ToolCallHandler', ToolCallHandler);
+    registry.register('ActionResultProcessor', ActionResultProcessor);
+    registry.register('ActivationDecider', ActivationDecider);
     registry.register('LuaScriptingPromptEmitter', LuaScriptingPromptEmitter);
     return registry;
   }
