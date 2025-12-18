@@ -1,7 +1,11 @@
 /**
- * Discord Application for Connectome
+ * Discord Application for Connectome (Consolidated)
  *
- * FLEX Architecture - All components extend Component directly with explicit constraints.
+ * FLEX Architecture with explicit multi-constraint ordering.
+ *
+ * Component structure:
+ * - DiscordReceptor: All inbound Discord handling + infrastructure setup
+ * - DiscordEffector: All outbound Discord actions (after AgentComponent)
  */
 
 import { ConnectomeApplication } from 'connectome-ts/src/host/types';
@@ -9,7 +13,6 @@ import { Space } from 'connectome-ts/src/spaces/space';
 import { VEILStateManager } from 'connectome-ts/src/veil/veil-state';
 import { ComponentRegistry } from 'connectome-ts/src/persistence/component-registry';
 import { AgentComponent } from 'connectome-ts/src/agent/agent-component';
-import { persistable, persistent } from 'connectome-ts/src/persistence/decorators';
 import { Component } from 'connectome-ts/src/spaces/component';
 import { SpaceEvent, ExecutionContext } from 'connectome-ts/src/spaces/types';
 import { ComponentManager } from 'connectome-ts/src/spaces/component-manager';
@@ -22,6 +25,18 @@ import {
   afterComponentType,
   beforeComponentType
 } from 'connectome-ts/src/spaces/constraints';
+
+// Lua Scripting System
+import {
+  ScriptExecutorEffector,
+  ActionResultProcessor,
+  ActivationDecider,
+  createToolRegistry,
+  ToolRegistry,
+  setGlobalToolRegistry,
+  isToolCallFacet,
+  createToolCallResultFacet,
+} from 'connectome-ts/src/scripting';
 
 export interface DiscordAppConfig {
   agentName: string;
@@ -36,28 +51,46 @@ export interface DiscordAppConfig {
 }
 
 /**
- * FLEX Component: Discord Message Receptor
+ * DiscordReceptor - Unified inbound Discord component
  *
- * Handles all Discord event-to-facet transformations:
- * - discord:connected → config facets + connection event
- * - discord:message → message facets + agent activations
- * - discord:history-sync → offline edit/delete detection
- * - discord:messageUpdate → message edit handling
- * - discord:messageDelete → message deletion handling
+ * Handles:
+ * - Discord event → VEIL facet transformations (connected, message, history-sync, update, delete)
+ * - Infrastructure setup (waits for dependencies, creates DiscordAfferent)
+ * - System prompt emission
  *
  * Constraints:
  * - Priority 100 (standard receptor)
- * - Must run before DiscordEffector (effector reads our facets from frame.deltas)
+ * - Must run before DiscordEffector (we create facets it reads)
+ * - Must run before AgentComponent (we create activations it processes)
  */
-class DiscordMessageReceptor extends Component {
+class DiscordReceptor extends Component {
   constraints = [
     priorityConstraint(ComponentPriority.RECEPTOR),
-    beforeComponentType('DiscordEffector')
+    beforeComponentType('DiscordEffector'),
+    beforeComponentType('AgentComponent')
   ];
+
+  // Infrastructure state
+  private discordConfig?: any;
+  private agentSystemPrompts?: Array<{ agentName: string; systemPrompt: string }>;
+  private infrastructureTriggered = false;
+  private requiredComponents = new Set(['DiscordEffector', 'ActionEffector', 'ContextTransform']);
 
   execute(context: ExecutionContext): void {
     const { event, state } = context;
 
+    // Phase 1: Handle Discord events → create facets
+    this.handleDiscordEvents(event, state);
+
+    // Phase 2: Infrastructure check (create DiscordAfferent when ready)
+    this.checkInfrastructure();
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // Phase 1: Discord Event Handling (Receptor Logic)
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  private handleDiscordEvents(event: SpaceEvent, state: ReadonlyVEILState): void {
     switch (event.topic) {
       case 'discord:connected':
         this.handleConnected(event, state);
@@ -78,21 +111,21 @@ class DiscordMessageReceptor extends Component {
   }
 
   private handleConnected(event: SpaceEvent, state: ReadonlyVEILState): void {
-    console.log('[DiscordMessageReceptor] Processing discord:connected event');
+    console.log('[DiscordReceptor] Processing discord:connected event');
     const payload = event.payload as any;
 
-    // Store bot user ID in a persistent config facet for easy access
+    // Store bot user ID
     if (payload.botUserId) {
-      console.log(`[DiscordMessageReceptor] Storing bot user ID: ${payload.botUserId}`);
+      console.log(`[DiscordReceptor] Storing bot user ID: ${payload.botUserId}`);
       for (const delta of updateStateFacets('discord-config', { botUserId: payload.botUserId }, state)) {
         this.addOperation(delta);
       }
     }
 
-    // Emit identity system prompt with actual bot name from Discord
+    // Emit identity system prompt
     const botName = payload.botDisplayName || payload.botUsername || payload.agentName;
     if (botName) {
-      console.log(`[DiscordMessageReceptor] Emitting identity facet for bot: ${botName}`);
+      console.log(`[DiscordReceptor] Emitting identity facet for bot: ${botName}`);
       this.addOperation({
         type: 'addFacet',
         facet: {
@@ -103,17 +136,14 @@ class DiscordMessageReceptor extends Component {
       });
     }
 
-    // Also create the connection event facet
+    // Create connection event facet
     this.addOperation({
       type: 'addFacet',
       facet: {
         id: `discord-connected-${Date.now()}`,
         type: 'event',
         content: 'Discord connected',
-        state: {
-          source: 'discord',
-          eventType: 'discord-connected'
-        },
+        state: { source: 'discord', eventType: 'discord-connected' },
         attributes: payload as Record<string, any>
       }
     });
@@ -123,37 +153,24 @@ class DiscordMessageReceptor extends Component {
     const payload = event.payload as any;
     const { channelId, channelName, author, authorId, content, rawContent, mentions, attachments, reply, messageId, streamId, streamType, isBot } = payload;
 
-    // Check if we've already processed this message (de-dup against VEIL)
+    // De-dup check
     const lastReadFacet = state.facets.get(`discord-lastread-${channelId}`);
     const lastMessageId = lastReadFacet?.state?.value;
-
     if (lastMessageId && this.isOlderOrEqual(messageId, lastMessageId)) {
-      console.log(`[DiscordMessageReceptor] Skipping old/duplicate message ${messageId}`);
       return;
     }
 
-    console.log(`[DiscordMessageReceptor] Processing message from ${author}: "${content}"${reply ? ' (reply)' : ''}`);
+    console.log(`[DiscordReceptor] Processing message from ${author}: "${content}"`);
 
-    // Retrieve bot user ID from VEIL state
+    // Get bot user ID for activation checks
     const botConfigFacet = state.facets.get('discord-config-botUserId');
     const botUserId = botConfigFacet?.state?.value;
 
-    if (!botUserId) {
-      console.warn('[DiscordMessageReceptor] Bot user ID not found in VEIL state, skipping activation checks');
-    }
-
-    // Format content with reply syntax if this is a reply
+    // Format content with reply syntax
     let formattedContent = content;
-    let replyToUsername = null;
-
     if (reply) {
       const referencedFacet = state.facets.get(`discord-msg-${reply.messageId}`);
-      if (referencedFacet && referencedFacet.state?.metadata?.author) {
-        replyToUsername = referencedFacet.state.metadata.author;
-      } else if (reply.author) {
-        replyToUsername = reply.author;
-      }
-
+      const replyToUsername = referencedFacet?.state?.metadata?.author || reply.author;
       if (replyToUsername) {
         formattedContent = `<reply:@${replyToUsername}> ${content}`;
       }
@@ -166,30 +183,21 @@ class DiscordMessageReceptor extends Component {
       content: formattedContent,
       streamId,
       streamType,
-      state: {
-        speakerId: `discord:${authorId}`,
-        speaker: author,
-        metadata: { attachments }
-      }
+      state: { speakerId: `discord:${authorId}`, speaker: author, metadata: { attachments } }
     };
 
-    // If this is from the bot itself, mark it as agent-generated
     if (authorId === botUserId) {
       speechFacet.agentId = 'connectome';
       speechFacet.agentName = 'Connectome';
     }
 
-    // Create message facet with speech nested inside
+    // Create message facet with speech nested
     this.addOperation({
       type: 'addFacet',
       facet: {
         id: `discord-msg-${messageId}`,
         type: 'event',
-        state: {
-          source: 'discord',
-          eventType: 'discord-message',
-          metadata: { channelName, author, authorId, isBot, rawContent, mentions, attachments, reply }
-        },
+        state: { source: 'discord', eventType: 'discord-message', metadata: { channelName, author, authorId, isBot, rawContent, mentions, attachments, reply } },
         streamId,
         streamType,
         attributes: { channelId, messageId, mentions, reply },
@@ -197,32 +205,28 @@ class DiscordMessageReceptor extends Component {
       }
     });
 
-    // Update lastRead in VEIL
+    // Update lastRead
     for (const delta of updateStateFacets('discord-lastread', { [channelId]: messageId }, state)) {
       this.addOperation(delta);
     }
 
-    // Activate agent if the bot is mentioned or replied to
+    // Create activation if bot mentioned/replied to
     if (botUserId) {
       const botMentioned = mentions?.users?.some((u: any) => u.id === botUserId);
       const replyingToBot = reply?.authorId === botUserId;
-      const activatePattern = /<activate\s+([^>]+)>/i;
-      const activateMatch = rawContent?.match(activatePattern);
-      const fallbackActivate = activateMatch !== null && activateMatch !== undefined;
+      const activateMatch = rawContent?.match(/<activate\s+([^>]+)>/i);
 
-      if (botMentioned || replyingToBot || fallbackActivate) {
+      if (botMentioned || replyingToBot || activateMatch) {
         const reason = botMentioned ? 'bot_mentioned' : replyingToBot ? 'bot_replied_to' : 'fallback_activate';
-        console.log(`[DiscordMessageReceptor] Creating agent activation (${reason})`);
+        console.log(`[DiscordReceptor] Creating agent activation (${reason})`);
 
         const { createAgentActivation } = require('connectome-ts/src/helpers/factories');
-
         this.addOperation({
           type: 'addFacet',
           facet: createAgentActivation(reason, {
             id: `activation-${messageId}`,
             priority: 'normal',
             source: 'discord-message',
-            sourceAgentId: author.id,
             channelId,
             messageId,
             author,
@@ -243,25 +247,17 @@ class DiscordMessageReceptor extends Component {
 
   private handleHistorySync(event: SpaceEvent, state: ReadonlyVEILState): void {
     const { channelId, channelName, guildId, guildName, messages } = event.payload as any;
+    console.log(`[DiscordReceptor] Syncing ${messages.length} messages for channel ${channelId}`);
 
-    console.log(`[DiscordMessageReceptor] Syncing ${messages.length} messages for channel ${channelId}`);
-
-    // Build map of current Discord state
     const discordMessages = new Map(messages.map((m: any) => [m.messageId, m]));
-
-    // Find all Discord message facets for this channel in VEIL
     const veilMessages = Array.from(state.facets.values()).filter(
-      f => f.type === 'event' &&
-        (f as any).state?.eventType === 'discord-message' &&
-        (f as any).attributes?.channelId === channelId
+      f => f.type === 'event' && (f as any).state?.eventType === 'discord-message' && (f as any).attributes?.channelId === channelId
     );
 
-    let deletedCount = 0;
-    let editedCount = 0;
+    let deletedCount = 0, editedCount = 0;
     const newMessages: any[] = [];
 
-    console.log(`[DiscordMessageReceptor] Found ${veilMessages.length} existing messages in VEIL, ${messages.length} in history`);
-
+    // Check for offline edits/deletes
     for (const veilMsg of veilMessages) {
       const messageId = (veilMsg as any).attributes.messageId;
       const speechFacet = (veilMsg as any).children?.[0];
@@ -269,10 +265,7 @@ class DiscordMessageReceptor extends Component {
       const discordMsg = discordMessages.get(messageId) as any;
 
       if (!discordMsg) {
-        // Message was DELETED offline
-        console.log(`[DiscordMessageReceptor] Message ${messageId} deleted offline`);
         deletedCount++;
-
         this.addOperation({ type: 'removeFacet', id: veilMsg.id });
         this.addOperation({
           type: 'addFacet',
@@ -281,54 +274,27 @@ class DiscordMessageReceptor extends Component {
             type: 'event',
             content: `[A message was deleted while offline]`,
             state: { source: 'discord-history-sync', eventType: 'discord-message-deleted-offline', metadata: { messageId, channelId } },
-            attributes: { messageId, channelId },
             ephemeral: true
           }
         });
       } else if (this.extractContent(veilContent) !== discordMsg.content) {
-        // Message was EDITED offline
-        console.log(`[DiscordMessageReceptor] Message ${messageId} edited offline`);
         editedCount++;
-
         if (speechFacet) {
-          this.addOperation({
-            type: 'rewriteFacet',
-            id: speechFacet.id,
-            changes: { content: `${discordMsg.author}: ${discordMsg.content}` }
-          });
+          this.addOperation({ type: 'rewriteFacet', id: speechFacet.id, changes: { content: `${discordMsg.author}: ${discordMsg.content}` } });
         }
-
-        this.addOperation({
-          type: 'rewriteFacet',
-          id: veilMsg.id,
-          changes: {
-            state: {
-              source: 'discord',
-              eventType: 'discord-message',
-              metadata: { ...((veilMsg as any).state?.metadata || {}), rawContent: discordMsg.rawContent, mentions: discordMsg.mentions }
-            },
-            attributes: { ...((veilMsg as any).attributes || {}), mentions: discordMsg.mentions }
-          }
-        });
-
         this.addOperation({
           type: 'addFacet',
           facet: {
             id: `discord-offline-edit-${messageId}-${Date.now()}`,
             type: 'event',
             content: `[A message was edited while offline]`,
-            state: {
-              source: 'discord-history-sync',
-              eventType: 'discord-message-edited-offline',
-              metadata: { messageId, channelId, oldContent: this.extractContent(veilContent), newContent: discordMsg.content }
-            },
-            attributes: { messageId, channelId }
+            state: { source: 'discord-history-sync', eventType: 'discord-message-edited-offline', metadata: { messageId, channelId } }
           }
         });
       }
     }
 
-    // Find messages in Discord history that aren't in VEIL yet
+    // Find new messages
     const veilMessageIds = new Set(veilMessages.map(v => (v as any).attributes.messageId));
     for (const msg of messages) {
       if (!veilMessageIds.has(msg.messageId)) {
@@ -336,60 +302,29 @@ class DiscordMessageReceptor extends Component {
       }
     }
 
-    console.log(`[DiscordMessageReceptor] ${editedCount} edits, ${deletedCount} deletions, ${newMessages.length} new messages`);
+    console.log(`[DiscordReceptor] ${editedCount} edits, ${deletedCount} deletions, ${newMessages.length} new messages`);
 
-    // Create a single parent facet for new history messages
+    // Create history dump facet for new messages
     if (newMessages.length > 0) {
       const historyFacetId = `discord-history-${channelId}`;
-
-      // Start with metadata children so agent knows which channel/server this is
       const children: any[] = [
-        {
-          id: `${historyFacetId}-channel`,
-          type: 'metadata',
-          displayName: 'channel',
-          content: `#${channelName || 'unknown'}`
-        },
-        {
-          id: `${historyFacetId}-server`,
-          type: 'metadata',
-          displayName: 'server',
-          content: guildName || 'unknown'
-        }
+        { id: `${historyFacetId}-channel`, type: 'metadata', displayName: 'channel', content: `#${channelName || 'unknown'}` },
+        { id: `${historyFacetId}-server`, type: 'metadata', displayName: 'server', content: guildName || 'unknown' }
       ];
 
       for (const msg of newMessages) {
-        const speechFacet = {
-          id: `speech-${msg.messageId}`,
-          type: 'speech',
-          content: msg.content,
-          state: { speakerId: `discord:${msg.authorId}`, speaker: msg.author }
-        };
-
         children.push({
           id: `discord-msg-${msg.messageId}`,
           type: 'event',
-          state: {
-            source: 'discord',
-            eventType: 'discord-message',
-            metadata: { channelName, author: msg.author, authorId: msg.authorId, isBot: msg.isBot, rawContent: msg.rawContent, mentions: msg.mentions }
-          },
-          attributes: { channelId, messageId: msg.messageId, mentions: msg.mentions },
-          children: [speechFacet]
+          state: { source: 'discord', eventType: 'discord-message', metadata: { channelName, author: msg.author, authorId: msg.authorId, isBot: msg.isBot } },
+          attributes: { channelId, messageId: msg.messageId },
+          children: [{ id: `speech-${msg.messageId}`, type: 'speech', content: msg.content, state: { speakerId: `discord:${msg.authorId}`, speaker: msg.author } }]
         });
       }
 
-      // Use stable ID so reconnects update existing history instead of creating duplicates
       this.addOperation({
         type: 'addFacet',
-        facet: {
-          id: historyFacetId,
-          type: 'event',
-          displayName: 'discord-history',
-          state: { source: 'discord', eventType: 'discord-history-dump', metadata: { channelId, channelName, guildId, guildName, messageCount: newMessages.length } },
-          attributes: { channelId, guildId, messageCount: newMessages.length },
-          children
-        }
+        facet: { id: historyFacetId, type: 'event', displayName: 'discord-history', state: { source: 'discord', eventType: 'discord-history-dump' }, children }
       });
     }
   }
@@ -401,149 +336,84 @@ class DiscordMessageReceptor extends Component {
   }
 
   private handleMessageUpdate(event: SpaceEvent, state: ReadonlyVEILState): void {
-    const payload = event.payload as any;
-    const { messageId, content, rawContent, oldContent, rawOldContent, mentions, author, authorId, channelName, isBot } = payload;
-
-    console.log(`[DiscordMessageReceptor] Message ${messageId} edited by ${author}`);
+    const { messageId, content, rawContent, oldContent, mentions, author, authorId, channelName, isBot } = event.payload as any;
+    console.log(`[DiscordReceptor] Message ${messageId} edited by ${author}`);
 
     const facetId = `discord-msg-${messageId}`;
     const speechFacetId = `speech-${messageId}`;
 
     if (state.facets.has(facetId)) {
       if (state.facets.has(speechFacetId)) {
-        this.addOperation({
-          type: 'rewriteFacet',
-          id: speechFacetId,
-          changes: { content: `${author}: ${content}` }
-        });
+        this.addOperation({ type: 'rewriteFacet', id: speechFacetId, changes: { content: `${author}: ${content}` } });
       }
-
       this.addOperation({
         type: 'rewriteFacet',
         id: facetId,
-        changes: {
-          state: { source: 'discord', eventType: 'discord-message', metadata: { channelName, author, authorId, isBot, rawContent, mentions } },
-          attributes: { mentions }
-        }
+        changes: { state: { source: 'discord', eventType: 'discord-message', metadata: { channelName, author, authorId, isBot, rawContent, mentions } } }
       });
-
       this.addOperation({
         type: 'addFacet',
         facet: {
           id: `discord-edit-${messageId}-${Date.now()}`,
           type: 'event',
-          content: `${author} edited their message in #${channelName}`,
-          state: {
-            source: 'discord',
-            eventType: 'discord-message-edited',
-            metadata: { messageId, author, authorId, channelName, oldContent, newContent: content, rawOldContent, rawNewContent: rawContent, mentions }
-          },
-          attributes: { messageId, oldContent, newContent: content, author, mentions }
+          content: `${author} edited their message`,
+          state: { source: 'discord', eventType: 'discord-message-edited', metadata: { messageId, oldContent, newContent: content } }
         }
       });
     }
   }
 
   private handleMessageDelete(event: SpaceEvent, state: ReadonlyVEILState): void {
-    const payload = event.payload as any;
-    const { messageId, author, channelName } = payload;
-
-    console.log(`[DiscordMessageReceptor] Message ${messageId} deleted`);
+    const { messageId, author, channelName } = event.payload as any;
+    console.log(`[DiscordReceptor] Message ${messageId} deleted`);
 
     const facetId = `discord-msg-${messageId}`;
-
     if (state.facets.has(facetId)) {
       this.addOperation({ type: 'removeFacet', id: facetId });
-
       this.addOperation({
         type: 'addFacet',
         facet: {
           id: `discord-delete-${messageId}-${Date.now()}`,
           type: 'event',
-          content: `${author || 'Someone'} deleted their message in #${channelName || 'a channel'}`,
-          state: {
-            source: 'discord',
-            eventType: 'discord-message-deleted',
-            metadata: { messageId, author, channelName, deletedFacetId: facetId }
-          },
-          attributes: { messageId, author, deletedFacetId: facetId }
+          content: `${author || 'Someone'} deleted their message`,
+          state: { source: 'discord', eventType: 'discord-message-deleted', metadata: { messageId, deletedFacetId: facetId } }
         }
       });
     }
   }
-}  // End of DiscordMessageReceptor class
-/**
- * FLEX Component: Discord Infrastructure
- *
- * Watches for required components to be mounted and triggers DiscordAfferent creation.
- *
- * Constraints:
- * - Priority 150 (early transform, between receptor and standard transforms)
- * - Must run after DiscordMessageReceptor (receptor should be ready first)
- * - Must run before DiscordEffector (we create DiscordAfferent that effector needs)
- */
-class DiscordInfrastructureTransform extends Component {
-  constraints = [
-    priorityConstraint(150),
-    afterComponentType('DiscordMessageReceptor'),
-    beforeComponentType('DiscordEffector')
-  ];
 
-  // Discord configuration (injected via component config)
-  private discordConfig?: any;
+  // ═══════════════════════════════════════════════════════════════════════════
+  // Phase 2: Infrastructure Setup
+  // ═══════════════════════════════════════════════════════════════════════════
 
-  // Agent system prompts to emit as ambient facets (behavioral instructions without identity)
-  // Identity is emitted separately when Discord connects
-  private agentSystemPrompts?: Array<{ agentName: string; systemPrompt: string }>;
+  private checkInfrastructure(): void {
+    if (this.infrastructureTriggered || !this.discordConfig || !this.space) return;
 
-  // Track which components we're waiting for (simplified for merged receptor)
-  // Note: AgentComponent is created later in setupDiscordAgent, not in infrastructure
-  private requiredComponents = new Set([
-    'DiscordMessageReceptor',
-    'DiscordEffector',
-    'ActionEffector',
-    'ContextTransform'
-  ]);
-
-  private hasTriggered = false;
-
-  execute(context: ExecutionContext): void {
-    if (this.hasTriggered) return;
-
-    if (!this.discordConfig) {
-      console.log('[DiscordInfrastructure] Waiting for config...');
-      return;
-    }
-
-    const space = this.space;
-    if (!space) {
-      console.log('[DiscordInfrastructure] Space not available yet...');
-      return;
-    }
-
-    const components = space.components || [];
+    const components = this.space.components || [];
     const mountedTypes = new Set(components.map((c: any) => c.constructor.name));
 
-    const allReady = [...this.requiredComponents].every(type => mountedTypes.has(type));
-
-    if (!allReady) {
-      console.log('[DiscordInfrastructure] Waiting for components... Have:', Array.from(mountedTypes), 'Need:', Array.from(this.requiredComponents));
+    if (![...this.requiredComponents].every(type => mountedTypes.has(type))) return;
+    if (components.some((c: any) => c.constructor.name === 'DiscordAfferent')) {
+      this.infrastructureTriggered = true;
       return;
     }
 
-    const hasDiscordAfferent = components.some((c: any) => c.constructor.name === 'DiscordAfferent');
-    if (hasDiscordAfferent) {
-      console.log('[DiscordInfrastructure] DiscordAfferent already exists, skipping creation');
-      this.hasTriggered = true;
-      return;
+    console.log('[DiscordReceptor] All components ready - creating DiscordAfferent');
+    this.infrastructureTriggered = true;
+
+    // Emit system prompts
+    if (this.agentSystemPrompts?.length) {
+      for (const { agentName, systemPrompt } of this.agentSystemPrompts) {
+        if (systemPrompt) {
+          this.addOperation({
+            type: 'addFacet',
+            facet: { id: `system-prompt:${agentName}`, type: 'ambient', content: systemPrompt }
+          });
+        }
+      }
     }
 
-    console.log('[DiscordInfrastructure] All components ready - creating DiscordAfferent via component:add');
-    this.hasTriggered = true;
-
-    // Emit system prompts as ambient facets for each agent
-    this.emitSystemPromptFacets();
-
+    // Create DiscordAfferent
     this.emit({
       topic: 'component:add',
       timestamp: Date.now(),
@@ -557,128 +427,66 @@ class DiscordInfrastructureTransform extends Component {
           agent: this.discordConfig.agent,
           token: this.discordConfig.token,
           autoJoinChannels: this.discordConfig.autoJoinChannels || [],
-          _axonMetadata: {
-            moduleUrl: this.discordConfig.moduleUrl,
-            manifestUrl: this.discordConfig.manifestUrl
-          }
+          _axonMetadata: { moduleUrl: this.discordConfig.moduleUrl, manifestUrl: this.discordConfig.manifestUrl }
         }
       }
     });
   }
-
-  /**
-   * Emit system prompt facets (behavioral instructions without identity)
-   * Identity facet is emitted separately when Discord connects
-   */
-  private emitSystemPromptFacets(): void {
-    if (!this.agentSystemPrompts?.length) {
-      console.log('[DiscordInfrastructure] No agent system prompts configured');
-      return;
-    }
-
-    for (const { agentName, systemPrompt } of this.agentSystemPrompts) {
-      if (systemPrompt) {
-        console.log(`[DiscordInfrastructure] Emitting system prompt for agent: ${agentName}`);
-
-        this.addOperation({
-          type: 'addFacet',
-          facet: {
-            id: `system-prompt:${agentName}`,
-            type: 'ambient',
-            content: systemPrompt
-          }
-        });
-      }
-    }
-  }
 }
 
 /**
- * FLEX Component: Discord Effector
+ * DiscordEffector - Unified outbound Discord component
  *
- * Handles all Discord side effects:
- * - Auto-join channels when connected
- * - Send typing indicators when agent activates
- * - Send agent speech to Discord
+ * Handles:
+ * - Typing indicators on agent-activation
+ * - Sending speech facets to Discord
  *
  * Constraints:
  * - Priority 300 (standard effector)
- * - Must run after DiscordMessageReceptor (we read discord-connected, agent-activation facets from frame.deltas)
+ * - Must run after DiscordReceptor (we read facets it creates)
  * - Must run after AgentComponent (we read speech facets the agent creates)
  */
 class DiscordEffector extends Component {
   constraints = [
     priorityConstraint(ComponentPriority.EFFECTOR),
-    afterComponentType('DiscordMessageReceptor'),
+    afterComponentType('DiscordReceptor'),
     afterComponentType('AgentComponent')
   ];
 
   private discordAfferent?: any;
-  private channels: string[] = [];
-
-  onMount(): void {
-    const space = this.space;
-    if (space) {
-      this.discordAfferent = space.components.find((c: any) =>
-        c.constructor.name === 'DiscordAfferent'
-      );
-      console.log(`[DiscordEffector] Found DiscordAfferent:`, !!this.discordAfferent);
-    }
-  }
 
   execute(context: ExecutionContext): void {
     const { state, frame } = context;
 
     // Lazy lookup for DiscordAfferent
-    if (!this.discordAfferent) {
-      const space = this.space;
-      if (space) {
-        this.discordAfferent = space.components.find((c: any) =>
-          c.constructor.name === 'DiscordAfferent'
-        );
-      }
+    if (!this.discordAfferent && this.space) {
+      this.discordAfferent = this.space.components.find((c: any) => c.constructor.name === 'DiscordAfferent');
     }
 
-    // Process frame deltas for facets we care about
-    if (frame && frame.deltas) {
-      for (const delta of frame.deltas) {
-        if (delta.type === 'addFacet') {
-          const facet = delta.facet;
+    if (!frame?.deltas) return;
 
-          // Handle discord:connected - auto-join channels
-          if (facet.type === 'event' && (facet as any).state?.eventType === 'discord-connected') {
-            this.handleConnected(state);
-          }
+    for (const delta of frame.deltas) {
+      if (delta.type !== 'addFacet') continue;
+      const facet = delta.facet;
 
-          // Handle agent-activation - send typing indicator
-          if (facet.type === 'agent-activation') {
-            this.handleActivation(facet, state);
-          }
+      // Typing indicator on activation
+      if (facet.type === 'agent-activation') {
+        this.handleActivation(facet, state);
+      }
 
-          // Handle speech - send to Discord
-          if (facet.type === 'speech') {
-            this.handleSpeech(facet, state);
-          }
-        }
+      // Send speech to Discord
+      if (facet.type === 'speech') {
+        this.handleSpeech(facet, state);
       }
     }
-  }
-
-  private handleConnected(state: ReadonlyVEILState): void {
-    // NOTE: Auto-join is handled by DiscordAfferent itself when authenticated.
-    // This effector no longer auto-joins to avoid duplicate join commands.
-    // The afferent reads autoJoinChannels from component state and joins there.
-    console.log('🤖 Discord connected! (auto-join handled by DiscordAfferent)');
   }
 
   private handleActivation(facet: Facet, state: ReadonlyVEILState): void {
     const activation = facet as any;
     const channelId = activation.state?.channelId || activation.state?.metadata?.channelId;
-
     if (!channelId || !this.discordAfferent?.sendTyping) return;
 
     console.log(`[DiscordEffector] Sending typing indicator to channel: ${channelId}`);
-
     this.discordAfferent.sendTyping({ channelId }).catch((err: any) =>
       console.error(`Failed to send typing indicator:`, err)
     );
@@ -689,61 +497,37 @@ class DiscordEffector extends Component {
     const streamId = speech.streamId;
     let content = speech.content;
 
-    // Check if this is for Discord
-    if (!streamId || !streamId.startsWith('discord:')) return;
+    if (!streamId?.startsWith('discord:')) return;
 
     console.log(`[DiscordEffector] Processing speech for stream: ${streamId}`);
 
-    // Check for reply syntax: <reply:@username> message
+    // Handle reply syntax
     const replyMatch = content.match(/^<reply:@([^>]+)>\s*/);
     let replyToMessageId = null;
-
     if (replyMatch) {
-      const replyToUsername = replyMatch[1];
       content = content.substring(replyMatch[0].length);
-      console.log(`[DiscordEffector] Detected reply to @${replyToUsername}`);
-      replyToMessageId = this.inferReplyTarget(replyToUsername, speech, state);
+      replyToMessageId = this.inferReplyTarget(replyMatch[1], speech, state);
     }
 
-    // Find the channel ID from latest discord message
+    // Find channel from latest message
     const discordMessages = Array.from(state.facets.values()).filter(
       f => f.type === 'event' && (f as any).state?.eventType === 'discord-message'
     );
-
-    if (discordMessages.length === 0) {
-      console.warn('[DiscordEffector] No discord-message facets found');
-      return;
-    }
+    if (discordMessages.length === 0) return;
 
     const latestMessage = discordMessages[discordMessages.length - 1] as any;
     const channelId = latestMessage.attributes?.channelId;
-
-    if (!channelId) {
-      console.warn('[DiscordEffector] No channelId in message facet');
-      return;
-    }
+    if (!channelId || !this.discordAfferent) return;
 
     const sendParams: any = { channelId, message: content };
-    if (replyToMessageId) {
-      sendParams.replyTo = replyToMessageId;
-      console.log(`[DiscordEffector] Sending as reply to message ${replyToMessageId}`);
-    }
+    if (replyToMessageId) sendParams.replyTo = replyToMessageId;
 
     console.log(`[DiscordEffector] Sending to channel ${channelId}: "${content}"`);
 
-    if (!this.discordAfferent) {
-      console.error('[DiscordEffector] DiscordAfferent not available');
-      return;
-    }
-
-    if (this.discordAfferent.send && typeof this.discordAfferent.send === 'function') {
-      this.discordAfferent.send(sendParams)
-        .then(() => console.log(`[DiscordEffector] Successfully sent message`))
-        .catch((err: any) => console.error(`Failed to send to Discord:`, err));
+    if (typeof this.discordAfferent.send === 'function') {
+      this.discordAfferent.send(sendParams).catch((err: any) => console.error(`Failed to send:`, err));
     } else if (this.discordAfferent.actions?.has('send')) {
-      this.discordAfferent.actions.get('send')(sendParams)
-        .then(() => console.log(`[DiscordEffector] Successfully sent message`))
-        .catch((err: any) => console.error(`Failed to send to Discord:`, err));
+      this.discordAfferent.actions.get('send')(sendParams).catch((err: any) => console.error(`Failed to send:`, err));
     }
   }
 
@@ -752,133 +536,465 @@ class DiscordEffector extends Component {
       f => f.type === 'event' && (f as any).state?.eventType === 'discord-message'
     ) as any[];
 
-    // Heuristic 1: Check the activation event
+    // Check activation event
     const activations = Array.from(state.facets.values()).filter(
       f => f.type === 'agent-activation' && (f as any).state?.streamRef?.streamId === speech.streamId
     ) as any[];
 
     if (activations.length > 0) {
-      const latestActivation = activations[activations.length - 1];
-      const triggerMessageId = latestActivation.state?.messageId;
-      if (triggerMessageId) {
-        const triggerMessage = discordMessages.find(m => m.attributes?.messageId === triggerMessageId);
-        if (triggerMessage && triggerMessage.state?.metadata?.author === username) {
-          console.log(`[DiscordEffector] Reply target (activation): ${triggerMessageId}`);
-          return triggerMessageId;
-        }
+      const triggerMessageId = activations[activations.length - 1].state?.messageId;
+      const triggerMessage = discordMessages.find(m => m.attributes?.messageId === triggerMessageId);
+      if (triggerMessage?.state?.metadata?.author === username) {
+        return triggerMessageId;
       }
     }
 
-    // Heuristic 2: Find last message from username that mentioned/replied to bot
-    const botConfigFacet = state.facets.get('discord-config-botUserId');
-    const botUserId = botConfigFacet?.state?.value;
-
+    // Find last message from username
     for (let i = discordMessages.length - 1; i >= 0; i--) {
-      const msg = discordMessages[i];
-      if (msg.state?.metadata?.author !== username) continue;
-
-      const mentions = msg.state?.metadata?.mentions;
-      if (mentions?.users?.some((u: any) => u.id === botUserId)) {
-        console.log(`[DiscordEffector] Reply target (mentioned bot): ${msg.attributes.messageId}`);
-        return msg.attributes.messageId;
-      }
-
-      const reply = msg.state?.metadata?.reply;
-      if (reply?.authorId === botUserId) {
-        console.log(`[DiscordEffector] Reply target (replied to bot): ${msg.attributes.messageId}`);
-        return msg.attributes.messageId;
+      if (discordMessages[i].state?.metadata?.author === username) {
+        return discordMessages[i].attributes.messageId;
       }
     }
 
-    // Heuristic 3: Find last message from username
-    for (let i = discordMessages.length - 1; i >= 0; i--) {
-      const msg = discordMessages[i];
-      if (msg.state?.metadata?.author === username) {
-        console.log(`[DiscordEffector] Reply target (last from user): ${msg.attributes.messageId}`);
-        return msg.attributes.messageId;
-      }
-    }
-
-    console.log(`[DiscordEffector] No reply target found for @${username}`);
     return null;
   }
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// Lua Scripting Support
+// ═══════════════════════════════════════════════════════════════════════════
 
 /**
- * Test component that auto-joins Discord channels when connected
+ * ToolCallHandler - Executes tool calls from Lua scripts
+ *
+ * Handles:
+ * - Processing tool-call facets created by ScriptExecutorEffector
+ * - Routing tool calls to appropriate handlers (Discord actions, etc.)
+ * - Creating tool-call-result facets to resume blocked scripts
+ *
+ * Constraints:
+ * - Priority 300 (effector)
+ * - Must run after ScriptExecutorEffector (which creates tool-call facets)
  */
-@persistable(1)
-class DiscordAutoJoinComponent extends Component {
-  @persistent() private channels: string[] = [];
-  @persistent() private hasJoined: boolean = false;
-  
-  constructor(channels: string[] = []) {  // No default channel - must be configured
-    super();
-    this.channels = channels;
-  }
-  
-  onMount(): void {
-    // Subscribe to discord connected event
-    this.subscribe('discord:connected');
-  }
-  
-  async handleEvent(event: SpaceEvent): Promise<void> {
-    console.log('🔔 DiscordAutoJoinComponent received event:', event.topic, 'from:', event.source);
-    
-    // Always try to join channels on discord:connected
-    if (event.topic === 'discord:connected') {
-      console.log('🤖 Discord connected! Auto-joining channels:', this.channels);
-      
-      // Find DiscordAfferent directly in space
-      const space = this.space;
-      const discordAfferent = space.components.find((c: any) => c.constructor.name === 'DiscordAfferent') as any;
-      
-      if (discordAfferent) {
-        console.log('Found DiscordAfferent');
-        for (const channelId of this.channels) {
-          console.log(`📢 Requesting to join channel: ${channelId}`);
-          
-          if (typeof discordAfferent.join === 'function') {
-             discordAfferent.join({ channelId });
-          }
-        }
-        this.hasJoined = true;
-      } else {
-        console.log('DiscordAfferent not found!');
+class ToolCallHandler extends Component {
+  constraints = [
+    priorityConstraint(ComponentPriority.EFFECTOR),
+    afterComponentType('ScriptExecutorEffector')
+  ];
+
+  private discordAfferent?: any;
+
+  execute(context: ExecutionContext): void {
+    const { frame, state } = context;
+    if (!frame?.deltas) return;
+
+    // Lazy lookup for DiscordAfferent
+    if (!this.discordAfferent && this.space) {
+      this.discordAfferent = this.space.components.find((c: any) => c.constructor.name === 'DiscordAfferent');
+    }
+
+    // Process tool-call facets from this frame
+    for (const delta of frame.deltas) {
+      if (delta.type === 'addFacet' && isToolCallFacet(delta.facet)) {
+        this.handleToolCall(delta.facet, state);
       }
     }
   }
+
+  private async handleToolCall(facet: any, state: ReadonlyVEILState): Promise<void> {
+    const { id: toolCallId, parentScriptId, toolName, args } = facet;
+    console.log(`[ToolCallHandler] Executing tool: ${toolName}(${JSON.stringify(args)})`);
+
+    try {
+      let result: unknown;
+
+      // Route tool calls to appropriate handlers
+      switch (toolName) {
+        case 'discord_send':
+          result = await this.handleDiscordSend(args, state);
+          break;
+
+        case 'discord_typing':
+          result = await this.handleDiscordTyping(args, state);
+          break;
+
+        case 'discord_join':
+          result = await this.handleDiscordJoin(args);
+          break;
+
+        case 'discord_leave':
+          result = await this.handleDiscordLeave(args);
+          break;
+
+        case 'log':
+          // Already handled by builtins, but support as tool too
+          console.log('[Lua]', ...(args as any[]));
+          result = true;
+          break;
+
+        default:
+          // Unknown tool - return error
+          this.addOperation({
+            type: 'addFacet',
+            facet: createToolCallResultFacet(
+              `tool-result:${Date.now()}`,
+              toolCallId,
+              parentScriptId,
+              { success: false, error: `Unknown tool: ${toolName}` }
+            )
+          });
+          // Emit tool-call:completed event to trigger next frame
+          this.emit({
+            topic: 'tool-call:completed',
+            timestamp: Date.now(),
+            payload: { toolCallId, parentScriptId, success: false }
+          });
+          return;
+      }
+
+      // Create success result
+      this.addOperation({
+        type: 'addFacet',
+        facet: createToolCallResultFacet(
+          `tool-result:${Date.now()}`,
+          toolCallId,
+          parentScriptId,
+          { success: true, result }
+        )
+      });
+
+      // Emit tool-call:completed event to trigger next frame
+      this.emit({
+        topic: 'tool-call:completed',
+        timestamp: Date.now(),
+        payload: { toolCallId, parentScriptId, success: true }
+      });
+
+    } catch (error: any) {
+      console.error(`[ToolCallHandler] Tool ${toolName} failed:`, error);
+      this.addOperation({
+        type: 'addFacet',
+        facet: createToolCallResultFacet(
+          `tool-result:${Date.now()}`,
+          toolCallId,
+          parentScriptId,
+          { success: false, error: error.message || String(error) }
+        )
+      });
+      // Emit tool-call:completed event to trigger next frame
+      this.emit({
+        topic: 'tool-call:completed',
+        timestamp: Date.now(),
+        payload: { toolCallId, parentScriptId, success: false }
+      });
+    }
+  }
+
+  private async handleDiscordSend(args: unknown[], state: ReadonlyVEILState): Promise<any> {
+    if (!this.discordAfferent) {
+      throw new Error('Discord not connected');
+    }
+
+    const [channelIdOrMessage, maybeMessage] = args;
+    let channelId: string;
+    let message: string;
+
+    if (typeof maybeMessage === 'string') {
+      // Called as discord_send(channelId, message)
+      channelId = String(channelIdOrMessage);
+      message = maybeMessage;
+    } else if (typeof channelIdOrMessage === 'string') {
+      // Called as discord_send(message) - use latest channel or first joined
+      message = channelIdOrMessage;
+      channelId = this.getLatestChannelId(state);
+      if (!channelId) {
+        // Fallback to first joined channel
+        channelId = this.getFirstJoinedChannel(state);
+      }
+      if (!channelId) {
+        throw new Error('No channel context available. Either reply to a Discord message, or specify a channel ID: discord_send(channelId, message)');
+      }
+    } else {
+      throw new Error('Invalid arguments: expected (message) or (channelId, message)');
+    }
+
+    if (!this.discordAfferent.send) throw new Error('Discord send function not available');
+
+    await this.discordAfferent.send({ channelId, message });
+    return { sent: true, channelId };
+  }
+
+  private async handleDiscordTyping(args: unknown[], state: ReadonlyVEILState): Promise<any> {
+    if (!this.discordAfferent?.sendTyping) {
+      throw new Error('Discord not connected');
+    }
+
+    const [channelId] = args;
+    const targetChannel = channelId ? String(channelId) : this.getLatestChannelId(state);
+    if (!targetChannel) throw new Error('No channel context available');
+
+    await this.discordAfferent.sendTyping({ channelId: targetChannel });
+    return { typing: true, channelId: targetChannel };
+  }
+
+  private async handleDiscordJoin(args: unknown[]): Promise<any> {
+    if (!this.discordAfferent?.join) {
+      throw new Error('Discord not connected');
+    }
+
+    const [channelId] = args;
+    if (!channelId) throw new Error('Channel ID required');
+
+    await this.discordAfferent.join({ channelId: String(channelId) });
+    return { joined: true, channelId: String(channelId) };
+  }
+
+  private async handleDiscordLeave(args: unknown[]): Promise<any> {
+    if (!this.discordAfferent?.leave) {
+      throw new Error('Discord not connected');
+    }
+
+    const [channelId] = args;
+    if (!channelId) throw new Error('Channel ID required');
+
+    await this.discordAfferent.leave({ channelId: String(channelId) });
+    return { left: true, channelId: String(channelId) };
+  }
+
+  private getLatestChannelId(state: ReadonlyVEILState): string {
+    const discordMessages = Array.from(state.facets.values()).filter(
+      f => f.type === 'event' && (f as any).state?.eventType === 'discord-message'
+    );
+    if (discordMessages.length === 0) return '';
+    const latestMessage = discordMessages[discordMessages.length - 1] as any;
+    return latestMessage.attributes?.channelId || '';
+  }
+
+  private getFirstJoinedChannel(state: ReadonlyVEILState): string {
+    // Look for component-state facet with joinedChannels
+    for (const facet of state.facets.values()) {
+      if (facet.type === 'component-state') {
+        const componentState = (facet as any).state;
+        if (componentState?.joinedChannels && Array.isArray(componentState.joinedChannels)) {
+          return componentState.joinedChannels[0] || '';
+        }
+      }
+    }
+    return '';
+  }
 }
+
+/**
+ * Create and configure a ToolRegistry with Discord tools
+ */
+function createDiscordToolRegistry(): ToolRegistry {
+  const registry = createToolRegistry();
+
+  // Discord tools
+  registry.register({
+    name: 'discord_send',
+    description: 'Send a message to a Discord channel',
+    parameters: [
+      { name: 'channelId', type: 'string', description: 'Channel ID (optional, uses current channel if omitted)', required: false },
+      { name: 'message', type: 'string', description: 'Message to send', required: true }
+    ]
+  });
+
+  registry.register({
+    name: 'discord_typing',
+    description: 'Show typing indicator in a Discord channel',
+    parameters: [
+      { name: 'channelId', type: 'string', description: 'Channel ID (optional)', required: false }
+    ]
+  });
+
+  registry.register({
+    name: 'discord_join',
+    description: 'Join a Discord channel',
+    parameters: [
+      { name: 'channelId', type: 'string', description: 'Channel ID to join', required: true }
+    ]
+  });
+
+  registry.register({
+    name: 'discord_leave',
+    description: 'Leave a Discord channel',
+    parameters: [
+      { name: 'channelId', type: 'string', description: 'Channel ID to leave', required: true }
+    ]
+  });
+
+  return registry;
+}
+
+/**
+ * LuaScriptingPromptEmitter - Emits Lua scripting documentation as ambient facet
+ *
+ * This component runs once on mount to inject the Lua scripting system prompt
+ * into the agent's context, so the agent knows about the `lua` action and available tools.
+ *
+ * Constraints:
+ * - Priority 0 (modulator - runs early to set up context)
+ */
+class LuaScriptingPromptEmitter extends Component {
+  constraints = [priorityConstraint(0)];  // Modulator priority
+
+  // Pre-generated prompt content (passed via config as plain string)
+  public promptContent?: string;
+  private emitted = false;
+
+  execute(context: ExecutionContext): void {
+    // Only emit once
+    if (this.emitted) return;
+    this.emitted = true;
+
+    if (!this.promptContent) {
+      console.warn('[LuaScriptingPromptEmitter] No prompt content configured');
+      return;
+    }
+
+    console.log('[LuaScriptingPromptEmitter] Emitting Lua scripting system prompt');
+
+    this.addOperation({
+      type: 'addFacet',
+      facet: {
+        id: 'system-prompt:lua-scripting',
+        type: 'ambient',
+        content: this.promptContent
+      }
+    });
+  }
+}
+
+/**
+ * Generate system prompt describing Lua scripting capability
+ */
+function generateLuaScriptingPrompt(registry: ToolRegistry): string {
+  const toolDocs = registry.getTools().map(tool => {
+    const params = tool.parameters.map(p => {
+      const req = p.required ? '' : '?';
+      return `${p.name}${req}: ${p.type}`;
+    }).join(', ');
+    return `  ${tool.name}(${params}) - ${tool.description}`;
+  }).join('\n');
+
+  return `## Lua Scripting
+
+You have access to a Lua scripting action that allows you to chain multiple operations in a single response.
+This is useful when you need to perform several related actions without waiting for intermediate responses.
+
+### Usage
+
+Use the "lua" action with Lua code in the content. Use \`return\` to get results back:
+
+<action name="lua">
+local result = discord_send("Hello!")
+return result
+</action>
+
+### Available Functions
+
+**Built-in:**
+  print(...) - Print to console for debugging
+  json.encode(value) - Convert value to JSON string
+  json.decode(str) - Parse JSON string to value
+
+**Discord Tools:**
+${toolDocs}
+
+### Examples
+
+Send a message to the current channel:
+<action name="lua">
+local result = discord_send("Hello from Lua!")
+return result
+</action>
+
+Send to a specific channel:
+<action name="lua">
+local result = discord_send("1234567890", "Hello to specific channel!")
+return result
+</action>
+
+Chain multiple actions:
+<action name="lua">
+discord_typing()
+local msg1 = discord_send("First message")
+local msg2 = discord_send("Second message")
+return { first = msg1, second = msg2 }
+</action>
+
+Conditional logic:
+<action name="lua">
+local result = discord_send("Testing...")
+if result and result.sent then
+  return discord_send("It worked!")
+else
+  return { error = "Failed to send" }
+end
+</action>
+
+### Correlating Multiple Actions with Aliases
+
+When using multiple actions in one response, use the \`alias\` attribute to identify which result belongs to which action:
+
+<action name="lua" alias="setup">
+discord_send("Setting up...")
+return { step = "setup", ready = true }
+</action>
+
+<action name="lua" alias="process">
+local data = json.encode({ items = 5 })
+return { step = "process", data = data }
+</action>
+
+Results will include the alias for easy correlation:
+\`\`\`
+<action_result alias="setup" success="true">{"step": "setup", "ready": true}</action_result>
+<action_result alias="process" success="true">{"step": "process", "data": "..."}</action_result>
+\`\`\`
+
+This is especially useful when actions may complete in different order than written.
+
+### Notes
+- Tool calls use positional arguments, not tables (e.g., \`discord_send("message")\` not \`discord_send({ message = "..." })\`)
+- Tool calls block until complete, then return their result
+- Use \`return\` to pass results back from the script
+- Errors in scripts will be reported back to you
+- When replying to a Discord message, \`discord_send("message")\` uses that channel automatically
+- If no channel context exists (e.g., activated via control panel), you must specify: \`discord_send(channelId, "message")\``;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Application
+// ═══════════════════════════════════════════════════════════════════════════
 
 export class DiscordApplication implements ConnectomeApplication {
   constructor(private config: DiscordAppConfig) {}
-  
+
   async createSpace(hostRegistry?: Map<string, any>, lifecycleId?: string, spaceId?: string): Promise<{ space: Space; veilState: VEILStateManager }> {
     const veilState = new VEILStateManager();
-    // Enable multi-constraint ordering to validate component dependencies
     const space = new Space(veilState, hostRegistry, lifecycleId, spaceId, {
       orderingStrategy: 'multi-constraint',
       multiConstraintOptions: { verbose: true }
     });
     return { space, veilState };
   }
-  
+
   async initialize(space: Space, veilState: VEILStateManager): Promise<void> {
-    console.log('🎮 Initializing Discord application (fresh start)...');
-    
-    // Register all components
+    console.log('🎮 Initializing Discord application...');
+
     this.getComponentRegistry();
 
-    // Add ComponentManager first - handles component:add events
-    // console.log('🔧 Adding ComponentManager...');
-    // space.addComponent(new ComponentManager(), 'ComponentManager');
-    console.log('🔧 ComponentManager should be provided by Host');
-
     const botToken = (this.config as any).botToken || '';
-        const modulePort = this.config.discord.modulePort || 8080;
+    const modulePort = this.config.discord.modulePort || 8080;
 
-    // Build Discord configuration
+    // Create tool registry early so we can generate Lua scripting docs
+    // Use global registry so ScriptExecutorEffector can access it
+    const toolRegistry = createDiscordToolRegistry();
+    setGlobalToolRegistry(toolRegistry);
+    const luaScriptingPrompt = generateLuaScriptingPrompt(toolRegistry);
+
     const discordConfig = {
       host: this.config.discord.host,
       path: '/ws',
@@ -890,42 +1006,26 @@ export class DiscordApplication implements ConnectomeApplication {
       manifestUrl: `http://localhost:${modulePort}/modules/discord-afferent/manifest`
     };
 
-    // STEP 1: Add DiscordInfrastructureTransform (via component:add event to test ComponentManager)
-    console.log('🔧 Adding DiscordInfrastructureTransform...');
+    // Add DiscordReceptor (unified inbound + infrastructure)
+    // Include Lua scripting docs as a system prompt
     space.emit({
       topic: 'component:add',
       source: space.getRef(),
       timestamp: Date.now(),
       payload: {
-        componentType: 'DiscordInfrastructureTransform',
-        componentId: 'discord:DiscordInfrastructureTransform',
+        componentType: 'DiscordReceptor',
+        componentId: 'discord:DiscordReceptor',
         config: {
           discordConfig,
-          // Pass agent system prompts directly so they can be emitted as ambient facets
           agentSystemPrompts: [
-            { agentName: this.config.agentName, systemPrompt: this.config.systemPrompt }
+            { agentName: this.config.agentName, systemPrompt: this.config.systemPrompt },
+            { agentName: 'lua-scripting', systemPrompt: luaScriptingPrompt }
           ]
         }
       }
     });
 
-
-    // STEP 2: Add FLEX components (merged for performance)
-    console.log('➕ Adding Discord FLEX components...');
-
-    // Add merged DiscordMessageReceptor (handles all discord events → facets)
-    space.emit({
-      topic: 'component:add',
-      source: space.getRef(),
-      timestamp: Date.now(),
-      payload: {
-        componentType: 'DiscordMessageReceptor',
-        componentId: 'discord:DiscordMessageReceptor',
-        config: {}
-      }
-    });
-
-    // Add merged DiscordEffector (handles auto-join, typing, speech)
+    // Add DiscordEffector (unified outbound)
     space.emit({
       topic: 'component:add',
       source: space.getRef(),
@@ -933,53 +1033,78 @@ export class DiscordApplication implements ConnectomeApplication {
       payload: {
         componentType: 'DiscordEffector',
         componentId: 'discord:DiscordEffector',
-        config: {
-          channels: this.config.discord.autoJoinChannels || []
-        }
+        config: {}
       }
     });
 
     // Add ActionEffector and ContextTransform
-    // Note: AgentComponent is created later in setupDiscordAgent with proper config
+    space.emit({ topic: 'component:add', source: space.getRef(), timestamp: Date.now(), payload: { componentType: 'ActionEffector', componentId: 'discord:ActionEffector', config: {} } });
+    space.emit({ topic: 'component:add', source: space.getRef(), timestamp: Date.now(), payload: { componentType: 'ContextTransform', componentId: 'discord:ContextTransform', config: {} } });
+
+    // Add ScriptExecutorEffector for Lua scripting support (uses global registry)
     space.emit({
       topic: 'component:add',
       source: space.getRef(),
       timestamp: Date.now(),
       payload: {
-        componentType: 'ActionEffector',
-        componentId: 'discord:ActionEffector',
+        componentType: 'ScriptExecutorEffector',
+        componentId: 'discord:ScriptExecutorEffector',
         config: {}
       }
     });
 
+    // Add ToolCallHandler to execute tool calls from Lua scripts
     space.emit({
       topic: 'component:add',
       source: space.getRef(),
       timestamp: Date.now(),
       payload: {
-        componentType: 'ContextTransform',
-        componentId: 'discord:ContextTransform',
+        componentType: 'ToolCallHandler',
+        componentId: 'discord:ToolCallHandler',
         config: {}
       }
     });
 
-    // Wait for infrastructure components to be created
+    // Add ActionResultProcessor to emit activation:create events from action-results
+    space.emit({
+      topic: 'component:add',
+      source: space.getRef(),
+      timestamp: Date.now(),
+      payload: {
+        componentType: 'ActionResultProcessor',
+        componentId: 'discord:ActionResultProcessor',
+        config: {}
+      }
+    });
+
+    // Add ActivationDecider to handle semantic events and create agent-activation facets
+    space.emit({
+      topic: 'component:add',
+      source: space.getRef(),
+      timestamp: Date.now(),
+      payload: {
+        componentType: 'ActivationDecider',
+        componentId: 'discord:ActivationDecider',
+        config: {}
+      }
+    });
+
+    // Add LuaScriptingPromptEmitter as backup (primary method is via agentSystemPrompts above)
+    space.emit({
+      topic: 'component:add',
+      source: space.getRef(),
+      timestamp: Date.now(),
+      payload: {
+        componentType: 'LuaScriptingPromptEmitter',
+        componentId: 'discord:LuaScriptingPromptEmitter',
+        config: { promptContent: luaScriptingPrompt }
+      }
+    });
+
     await new Promise(resolve => setTimeout(resolve, 100));
 
-    console.log('✅ Infrastructure components added - Discord component will be created when ready');
-
-    // Check for existing AgentComponent
-    let existingAgentComponent = space.getComponentById('discord-agent:AgentComponent');
-
-    if (!existingAgentComponent) {
-      console.log('🆕 Creating agent component');
-      
-        const agentConfig = {
-          name: this.config.agentName,
-          systemPrompt: this.config.systemPrompt,
-          autoActionRegistration: true
-        };
-      
+    // Add AgentComponent
+    if (!space.getComponentById('discord-agent:AgentComponent')) {
       space.emit({
         topic: 'component:add',
         source: space.getRef(),
@@ -987,75 +1112,50 @@ export class DiscordApplication implements ConnectomeApplication {
         payload: {
           componentType: 'AgentComponent',
           componentId: 'discord-agent:AgentComponent',
-          config: { agentConfig } 
+          config: { agentConfig: { name: this.config.agentName, systemPrompt: this.config.systemPrompt, autoActionRegistration: true } }
         }
       });
-      
       await new Promise(resolve => setTimeout(resolve, 100));
-    } else {
-      console.log('✅ Found existing agent component');
-    }
-    
-    // Subscribe to agent response events
-    space.subscribe('agent:frame-ready');
-
-    // Load discord-control-panel module via AxonLoader
-    let existingControlLoader = space.getComponentById('axon-loader:discord-control-panel');
-
-    if (!existingControlLoader) {
-      console.log('📋 Loading Discord control panel module');
-      const controlPanelLoader = new AxonLoaderComponent();
-      space.addComponent(controlPanelLoader, 'axon-loader:discord-control-panel');
-      await controlPanelLoader.connect(`axon://localhost:${modulePort}/modules/discord-control-panel/manifest`);
-    } else {
-      console.log('✅ Found existing Discord control panel loader');
     }
 
-    // Load component-factory module via AxonLoader
-    let existingFactoryLoader = space.getComponentById('axon-loader:component-factory');
+    // Load AXON modules
+    const controlPanelLoader = new AxonLoaderComponent();
+    space.addComponent(controlPanelLoader, 'axon-loader:discord-control-panel');
+    await controlPanelLoader.connect(`axon://localhost:${modulePort}/modules/discord-control-panel/manifest`);
 
-    if (!existingFactoryLoader) {
-      console.log('🎮 Loading Component factory module');
-      const componentFactoryLoader = new AxonLoaderComponent();
-      space.addComponent(componentFactoryLoader, 'axon-loader:component-factory');
-      await componentFactoryLoader.connect(`axon://localhost:${modulePort}/modules/component-factory/manifest`);
-    } else {
-      console.log('✅ Found existing Component factory loader');
-    }
-    
+    const factoryLoader = new AxonLoaderComponent();
+    space.addComponent(factoryLoader, 'axon-loader:component-factory');
+    await factoryLoader.connect(`axon://localhost:${modulePort}/modules/component-factory/manifest`);
+
     console.log('✅ Discord application initialized');
   }
-  
+
   getComponentRegistry(): typeof ComponentRegistry {
     const registry = ComponentRegistry;
-
-    // Register all FLEX components
     registry.register('AgentComponent', AgentComponent);
-    registry.register('DiscordAutoJoinComponent', DiscordAutoJoinComponent);
-
-    // Register FLEX infrastructure
     registry.register('ComponentManager', ComponentManager);
-    registry.register('DiscordInfrastructureTransform', DiscordInfrastructureTransform);
-
-    // Merged FLEX receptor (handles all discord events)
-    registry.register('DiscordMessageReceptor', DiscordMessageReceptor);
-
-    // Merged FLEX effector (handles auto-join, typing, speech)
+    registry.register('DiscordReceptor', DiscordReceptor);
     registry.register('DiscordEffector', DiscordEffector);
-
-    // Core components (AgentComponent, ActionEffector, ContextTransform, AxonLoaderComponent
-    // are registered in connectome-ts core-components.ts)
-
+    // Lua Scripting components (FLEX architecture)
+    registry.register('ScriptExecutorEffector', ScriptExecutorEffector);
+    registry.register('ToolCallHandler', ToolCallHandler);
+    registry.register('ActionResultProcessor', ActionResultProcessor);
+    registry.register('ActivationDecider', ActivationDecider);
+    registry.register('LuaScriptingPromptEmitter', LuaScriptingPromptEmitter);
     return registry;
   }
-  
+
   async onStart(space: Space, veilState: VEILStateManager): Promise<void> {
     console.log('🚀 Discord application started!');
-    console.log('✅ Discord application ready - waiting for infrastructure to create Discord component');
   }
-  
+
   async onRestore(space: Space, veilState: VEILStateManager): Promise<void> {
-    console.log('♻️ Discord application restored from snapshot');
-    console.log('✅ All connections re-established after restoration');
+    console.log('♻️ Discord application restored');
+
+    // Re-setup global tool registry after restoration
+    // This is needed because the global registry is cleared on process restart
+    const toolRegistry = createDiscordToolRegistry();
+    setGlobalToolRegistry(toolRegistry);
+    console.log('🔧 Tool registry re-initialized with', toolRegistry.getTools().length, 'tools');
   }
 }
