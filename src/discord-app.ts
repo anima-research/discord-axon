@@ -13,6 +13,7 @@ import { Space } from 'connectome-ts/src/spaces/space';
 import { VEILStateManager } from 'connectome-ts/src/veil/veil-state';
 import { ComponentRegistry } from 'connectome-ts/src/persistence/component-registry';
 import { AgentComponent } from 'connectome-ts/src/agent/agent-component';
+import { ResponseHandler } from 'connectome-ts/src/agent/response-handler';
 import { Component } from 'connectome-ts/src/spaces/component';
 import { SpaceEvent, ExecutionContext } from 'connectome-ts/src/spaces/types';
 import { ComponentManager } from 'connectome-ts/src/spaces/component-manager';
@@ -453,14 +454,38 @@ class DiscordEffector extends Component {
     afterComponentType('AgentComponent')
   ];
 
+  // No topics filter - needs to run on all events to:
+  // 1. Detect agent-activation facets in frame deltas (from discord:message events)
+  // 2. Handle activation:stream events for typing throttle
+  // 3. Handle activation:completed for cleanup
+  // 4. Send speech facets to Discord (from activation:completed frames)
+
   private discordAfferent?: any;
 
+  // Track typing state per activation for 8s throttle
+  private typingState = new Map<string, { channelId: string; lastSent: number }>();
+  private readonly TYPING_INTERVAL = 8000; // 8 seconds (Discord clears at 10s)
+
   execute(context: ExecutionContext): void {
-    const { state, frame } = context;
+    const { state, frame, event } = context;
 
     // Lazy lookup for DiscordAfferent
     if (!this.discordAfferent && this.space) {
       this.discordAfferent = this.space.components.find((c: any) => c.constructor.name === 'DiscordAfferent');
+    }
+
+    // Handle stream events for typing throttle
+    if (event?.topic === 'activation:stream') {
+      this.handleStreamTyping(event.payload);
+      return;
+    }
+
+    // Clean up typing state on completion
+    if (event?.topic === 'activation:completed') {
+      const activationId = (event.payload as any)?.activationId;
+      if (activationId) {
+        this.typingState.delete(activationId);
+      }
     }
 
     if (!frame?.deltas) return;
@@ -481,6 +506,36 @@ class DiscordEffector extends Component {
     }
   }
 
+  /**
+   * Handle streaming chunk - throttle typing indicator to every 8 seconds
+   */
+  private handleStreamTyping(payload: any): void {
+    if (!payload || !this.discordAfferent?.sendTyping) return;
+
+    const { activationId, done } = payload;
+    if (!activationId) return;
+
+    // Get or lookup channel from typing state (set during activation)
+    const typingInfo = this.typingState.get(activationId);
+    if (!typingInfo) return; // No channel context for this activation
+
+    if (done) {
+      // Stream complete - clean up (also done in activation:completed handler)
+      this.typingState.delete(activationId);
+      return;
+    }
+
+    // Check if we should send typing (throttle to TYPING_INTERVAL)
+    const now = Date.now();
+    if (now - typingInfo.lastSent >= this.TYPING_INTERVAL) {
+      console.log(`[DiscordEffector] Refreshing typing indicator for activation ${activationId}`);
+      this.discordAfferent.sendTyping({ channelId: typingInfo.channelId }).catch((err: any) =>
+        console.error(`Failed to refresh typing indicator:`, err)
+      );
+      typingInfo.lastSent = now;
+    }
+  }
+
   private handleActivation(facet: Facet, state: ReadonlyVEILState): void {
     const activation = facet as any;
     const channelId = activation.state?.channelId || activation.state?.metadata?.channelId;
@@ -490,6 +545,10 @@ class DiscordEffector extends Component {
     this.discordAfferent.sendTyping({ channelId }).catch((err: any) =>
       console.error(`Failed to send typing indicator:`, err)
     );
+
+    // Initialize typing state for stream throttle
+    const activationId = activation.id || facet.id;
+    this.typingState.set(activationId, { channelId, lastSent: Date.now() });
   }
 
   private handleSpeech(facet: Facet, state: ReadonlyVEILState): void {
@@ -1037,6 +1096,9 @@ export class DiscordApplication implements ConnectomeApplication {
       }
     });
 
+    // Add ResponseHandler to accumulate streams and emit activation:completed
+    space.emit({ topic: 'component:add', source: space.getRef(), timestamp: Date.now(), payload: { componentType: 'ResponseHandler', componentId: 'discord:ResponseHandler', config: {} } });
+
     // Add ActionEffector and ContextTransform
     space.emit({ topic: 'component:add', source: space.getRef(), timestamp: Date.now(), payload: { componentType: 'ActionEffector', componentId: 'discord:ActionEffector', config: {} } });
     space.emit({ topic: 'component:add', source: space.getRef(), timestamp: Date.now(), payload: { componentType: 'ContextTransform', componentId: 'discord:ContextTransform', config: {} } });
@@ -1133,6 +1195,7 @@ export class DiscordApplication implements ConnectomeApplication {
   getComponentRegistry(): typeof ComponentRegistry {
     const registry = ComponentRegistry;
     registry.register('AgentComponent', AgentComponent);
+    registry.register('ResponseHandler', ResponseHandler);
     registry.register('ComponentManager', ComponentManager);
     registry.register('DiscordReceptor', DiscordReceptor);
     registry.register('DiscordEffector', DiscordEffector);
