@@ -5,7 +5,7 @@
  *
  * Component structure:
  * - DiscordReceptor: All inbound Discord handling + infrastructure setup
- * - DiscordEffector: All outbound Discord actions (after AgentComponent)
+ * - DiscordOutbound: All outbound Discord actions (after AgentComponent)
  */
 
 import { ConnectomeApplication } from 'connectome-ts/src/host/types';
@@ -60,13 +60,13 @@ export interface DiscordAppConfig {
  *
  * Constraints:
  * - Priority 100 (standard receptor)
- * - Must run before DiscordEffector (we create facets it reads)
+ * - Must run before DiscordOutbound (we create facets it reads)
  * - Must run before AgentComponent (we create activations it processes)
  */
 class DiscordReceptor extends Component {
   constraints = [
     priorityConstraint(ComponentPriority.RECEPTOR),
-    beforeComponentType('DiscordEffector'),
+    beforeComponentType('DiscordOutbound'),
     beforeComponentType('AgentComponent')
   ];
 
@@ -74,20 +74,20 @@ class DiscordReceptor extends Component {
   private discordConfig?: any;
   private agentSystemPrompts?: Array<{ agentName: string; systemPrompt: string }>;
   private infrastructureTriggered = false;
-  private requiredComponents = new Set(['DiscordEffector', 'ActionEffector', 'ContextTransform']);
+  private requiredComponents = new Set(['DiscordOutbound', 'ActionEffector', 'ContextTransform']);
 
   execute(context: ExecutionContext): void {
     const { event, state } = context;
 
-    // Phase 1: Handle Discord events → create facets
+    // Step 1: Handle Discord events → create facets
     this.handleDiscordEvents(event, state);
 
-    // Phase 2: Infrastructure check (create DiscordAfferent when ready)
+    // Step 2: Infrastructure check (create DiscordAfferent when ready)
     this.checkInfrastructure();
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
-  // Phase 1: Discord Event Handling (Receptor Logic)
+  // Discord Event Handling (Inbound Logic)
   // ═══════════════════════════════════════════════════════════════════════════
 
   private handleDiscordEvents(event: SpaceEvent, state: ReadonlyVEILState): void {
@@ -383,7 +383,7 @@ class DiscordReceptor extends Component {
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
-  // Phase 2: Infrastructure Setup
+  // Infrastructure Setup
   // ═══════════════════════════════════════════════════════════════════════════
 
   private checkInfrastructure(): void {
@@ -435,7 +435,7 @@ class DiscordReceptor extends Component {
 }
 
 /**
- * DiscordEffector - Unified outbound Discord component
+ * DiscordOutbound - Unified outbound Discord component
  *
  * Handles:
  * - Typing indicators on agent-activation
@@ -446,7 +446,7 @@ class DiscordReceptor extends Component {
  * - Must run after DiscordReceptor (we read facets it creates)
  * - Must run after AgentComponent (we read speech facets the agent creates)
  */
-class DiscordEffector extends Component {
+class DiscordOutbound extends Component {
   constraints = [
     priorityConstraint(ComponentPriority.EFFECTOR),
     afterComponentType('DiscordReceptor'),
@@ -486,7 +486,7 @@ class DiscordEffector extends Component {
     const channelId = activation.state?.channelId || activation.state?.metadata?.channelId;
     if (!channelId || !this.discordAfferent?.sendTyping) return;
 
-    console.log(`[DiscordEffector] Sending typing indicator to channel: ${channelId}`);
+    console.log(`[DiscordOutbound] Sending typing indicator to channel: ${channelId}`);
     this.discordAfferent.sendTyping({ channelId }).catch((err: any) =>
       console.error(`Failed to send typing indicator:`, err)
     );
@@ -499,7 +499,7 @@ class DiscordEffector extends Component {
 
     if (!streamId?.startsWith('discord:')) return;
 
-    console.log(`[DiscordEffector] Processing speech for stream: ${streamId}`);
+    console.log(`[DiscordOutbound] Processing speech for stream: ${streamId}`);
 
     // Handle reply syntax
     const replyMatch = content.match(/^<reply:@([^>]+)>\s*/);
@@ -522,7 +522,7 @@ class DiscordEffector extends Component {
     const sendParams: any = { channelId, message: content };
     if (replyToMessageId) sendParams.replyTo = replyToMessageId;
 
-    console.log(`[DiscordEffector] Sending to channel ${channelId}: "${content}"`);
+    console.log(`[DiscordOutbound] Sending to channel ${channelId}: "${content}"`);
 
     if (typeof this.discordAfferent.send === 'function') {
       this.discordAfferent.send(sendParams).catch((err: any) => console.error(`Failed to send:`, err));
@@ -1025,14 +1025,14 @@ export class DiscordApplication implements ConnectomeApplication {
       }
     });
 
-    // Add DiscordEffector (unified outbound)
+    // Add DiscordOutbound (unified outbound)
     space.emit({
       topic: 'component:add',
       source: space.getRef(),
       timestamp: Date.now(),
       payload: {
-        componentType: 'DiscordEffector',
-        componentId: 'discord:DiscordEffector',
+        componentType: 'DiscordOutbound',
+        componentId: 'discord:DiscordOutbound',
         config: {}
       }
     });
@@ -1135,7 +1135,7 @@ export class DiscordApplication implements ConnectomeApplication {
     registry.register('AgentComponent', AgentComponent);
     registry.register('ComponentManager', ComponentManager);
     registry.register('DiscordReceptor', DiscordReceptor);
-    registry.register('DiscordEffector', DiscordEffector);
+    registry.register('DiscordOutbound', DiscordOutbound);
     // Lua Scripting components (FLEX architecture)
     registry.register('ScriptExecutorEffector', ScriptExecutorEffector);
     registry.register('ToolCallHandler', ToolCallHandler);

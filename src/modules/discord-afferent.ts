@@ -1,7 +1,7 @@
 /**
  * Discord Afferent - Manages WebSocket connection to Discord AXON server
  * 
- * This is the architecturally correct way to handle Discord in RETM:
+ * This is the architecturally correct way to handle Discord in Connectome:
  * - Afferent handles external input (WebSocket messages)
  * - Emits events when messages arrive
  * - Processes commands (join, leave, send) through command queue
