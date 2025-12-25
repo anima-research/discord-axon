@@ -9,6 +9,10 @@
  */
 
 import { config as dotenvConfig } from 'dotenv';
+
+// Import core-components to ensure all core components are registered
+import 'connectome-ts/src/core-components';
+
 import { ConnectomeHost } from 'connectome-ts/src/host';
 import { DiscordApplication } from './discord-app';
 import { AnthropicProvider } from 'connectome-ts/src/llm/anthropic-provider';
