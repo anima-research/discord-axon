@@ -5,10 +5,9 @@
  * Uses direct afferent calls for simpler architecture
  */
 
-// Import types
-import type { IAxonEnvironment } from 'connectome-ts/src/axon/interfaces';
+// Import types from public exports
+import type { IAxonEnvironment, SpaceEvent } from 'connectome-ts';
 import type { IPersistentMetadata } from '@connectome/axon-interfaces';
-import type { SpaceEvent } from 'connectome-ts/src/spaces/types';
 
 // Guild and channel info types
 interface GuildInfo {
@@ -797,8 +796,8 @@ export function createModule(env: IAxonEnvironment): typeof env.ControlPanelComp
     }
   }
 
-  // Import base components from connectome-ts
-  const { ControlPanelActionsReceptor, PanelScopeReceptor, Component } = env;
+  // Import base Component from environment
+  const { Component } = env;
 
   // ============================================
   // Discord Results Receptor (Unified) - FLEX Component
@@ -1057,8 +1056,6 @@ export function createModule(env: IAxonEnvironment): typeof env.ControlPanelComp
   return {
     components: {
       DiscordControlPanelComponent,
-      ControlPanelActionsReceptor,
-      PanelScopeReceptor,
       DiscordResultsReceptor
     }
   };

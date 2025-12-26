@@ -8,35 +8,44 @@
  * - DiscordOutbound: All outbound Discord actions (after AgentComponent)
  */
 
-import { ConnectomeApplication } from 'connectome-ts/src/host/types';
-import { Space } from 'connectome-ts/src/spaces/space';
-import { VEILStateManager } from 'connectome-ts/src/veil/veil-state';
-import { ComponentRegistry } from 'connectome-ts/src/persistence/component-registry';
-import { AgentComponent } from 'connectome-ts/src/agent/agent-component';
-import { Component } from 'connectome-ts/src/spaces/component';
-import { SpaceEvent, ExecutionContext } from 'connectome-ts/src/spaces/types';
-import { ComponentManager } from 'connectome-ts/src/spaces/component-manager';
-import { AxonLoaderComponent } from 'connectome-ts/src/components/axon-loader';
-import type { Facet, ReadonlyVEILState } from 'connectome-ts/src';
-import { updateStateFacets } from 'connectome-ts/src/helpers/factories';
 import {
+  // Host types
+  ConnectomeHost,
+  // Spaces
+  Space,
+  SpaceComponent as Component,
+  ComponentManager,
+  // VEIL
+  VEILStateManager,
+  // Persistence
+  ComponentRegistry,
+  // Agent
+  AgentComponent,
+  // Components
+  AxonLoaderComponent,
+  // Helpers
+  updateStateFacets,
+  // Constraints
   priorityConstraint,
   ComponentPriority,
   afterComponentType,
-  beforeComponentType
-} from 'connectome-ts/src/spaces/constraints';
-
-// Lua Scripting System
-import {
-  ScriptExecutorEffector,
+  beforeComponentType,
+  // Scripting
+  ScriptRunner,
   ActionResultProcessor,
   ActivationDecider,
   createToolRegistry,
-  ToolRegistry,
   setGlobalToolRegistry,
   isToolCallFacet,
   createToolCallResultFacet,
-} from 'connectome-ts/src/scripting';
+  // Types
+  SpaceEvent,
+} from 'connectome-ts';
+
+import type { ConnectomeApplication } from 'connectome-ts';
+import type { Facet, ReadonlyVEILState } from 'connectome-ts';
+import type { ToolRegistry } from 'connectome-ts';
+import type { ExecutionContext } from 'connectome-ts/dist/spaces/types';
 
 export interface DiscordAppConfig {
   agentName: string;
@@ -74,7 +83,7 @@ class DiscordReceptor extends Component {
   private discordConfig?: any;
   private agentSystemPrompts?: Array<{ agentName: string; systemPrompt: string }>;
   private infrastructureTriggered = false;
-  private requiredComponents = new Set(['DiscordOutbound', 'ActionEffector', 'ContextTransform']);
+  private requiredComponents = new Set(['DiscordOutbound', 'ActionRouter', 'ContextRenderer']);
 
   execute(context: ExecutionContext): void {
     const { event, state } = context;
@@ -568,18 +577,18 @@ class DiscordOutbound extends Component {
  * ToolCallHandler - Executes tool calls from Lua scripts
  *
  * Handles:
- * - Processing tool-call facets created by ScriptExecutorEffector
+ * - Processing tool-call facets created by ScriptRunner
  * - Routing tool calls to appropriate handlers (Discord actions, etc.)
  * - Creating tool-call-result facets to resume blocked scripts
  *
  * Constraints:
  * - Priority 300 (effector)
- * - Must run after ScriptExecutorEffector (which creates tool-call facets)
+ * - Must run after ScriptRunner (which creates tool-call facets)
  */
 class ToolCallHandler extends Component {
   constraints = [
     priorityConstraint(ComponentPriority.EFFECTOR),
-    afterComponentType('ScriptExecutorEffector')
+    afterComponentType('ScriptRunner')
   ];
 
   private discordAfferent?: any;
@@ -990,7 +999,7 @@ export class DiscordApplication implements ConnectomeApplication {
     const modulePort = this.config.discord.modulePort || 8080;
 
     // Create tool registry early so we can generate Lua scripting docs
-    // Use global registry so ScriptExecutorEffector can access it
+    // Use global registry so ScriptRunner can access it
     const toolRegistry = createDiscordToolRegistry();
     setGlobalToolRegistry(toolRegistry);
     const luaScriptingPrompt = generateLuaScriptingPrompt(toolRegistry);
@@ -1037,18 +1046,18 @@ export class DiscordApplication implements ConnectomeApplication {
       }
     });
 
-    // Add ActionEffector and ContextTransform
-    space.emit({ topic: 'component:add', source: space.getRef(), timestamp: Date.now(), payload: { componentType: 'ActionEffector', componentId: 'discord:ActionEffector', config: {} } });
-    space.emit({ topic: 'component:add', source: space.getRef(), timestamp: Date.now(), payload: { componentType: 'ContextTransform', componentId: 'discord:ContextTransform', config: {} } });
+    // Add ActionRouter and ContextRenderer
+    space.emit({ topic: 'component:add', source: space.getRef(), timestamp: Date.now(), payload: { componentType: 'ActionRouter', componentId: 'discord:ActionRouter', config: {} } });
+    space.emit({ topic: 'component:add', source: space.getRef(), timestamp: Date.now(), payload: { componentType: 'ContextRenderer', componentId: 'discord:ContextRenderer', config: {} } });
 
-    // Add ScriptExecutorEffector for Lua scripting support (uses global registry)
+    // Add ScriptRunner for Lua scripting support (uses global registry)
     space.emit({
       topic: 'component:add',
       source: space.getRef(),
       timestamp: Date.now(),
       payload: {
-        componentType: 'ScriptExecutorEffector',
-        componentId: 'discord:ScriptExecutorEffector',
+        componentType: 'ScriptRunner',
+        componentId: 'discord:ScriptRunner',
         config: {}
       }
     });
@@ -1137,7 +1146,7 @@ export class DiscordApplication implements ConnectomeApplication {
     registry.register('DiscordReceptor', DiscordReceptor);
     registry.register('DiscordOutbound', DiscordOutbound);
     // Lua Scripting components (FLEX architecture)
-    registry.register('ScriptExecutorEffector', ScriptExecutorEffector);
+    registry.register('ScriptRunner', ScriptRunner);
     registry.register('ToolCallHandler', ToolCallHandler);
     registry.register('ActionResultProcessor', ActionResultProcessor);
     registry.register('ActivationDecider', ActivationDecider);
