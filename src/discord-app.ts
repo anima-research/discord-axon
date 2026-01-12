@@ -17,6 +17,8 @@ import { ResponseHandler } from 'connectome-ts/src/agent/response-handler';
 import { Component } from 'connectome-ts/src/spaces/component';
 import { SpaceEvent, ExecutionContext } from 'connectome-ts/src/spaces/types';
 import { ComponentManager } from 'connectome-ts/src/spaces/component-manager';
+import { ActionRouter } from 'connectome-ts/src/spaces/action-effector';
+import { ContextRenderer } from 'connectome-ts/src/hud/context-transform';
 import { AxonLoaderComponent } from 'connectome-ts/src/components/axon-loader';
 import type { Facet, ReadonlyVEILState } from 'connectome-ts/src';
 import { updateStateFacets } from 'connectome-ts/src/helpers/factories';
@@ -75,7 +77,7 @@ class DiscordReceptor extends Component {
   private discordConfig?: any;
   private agentSystemPrompts?: Array<{ agentName: string; systemPrompt: string }>;
   private infrastructureTriggered = false;
-  private requiredComponents = new Set(['DiscordOutbound', 'ActionEffector', 'ContextTransform']);
+  private requiredComponents = new Set(['DiscordOutbound', 'ActionRouter', 'ContextRenderer']);
 
   execute(context: ExecutionContext): void {
     const { event, state } = context;
@@ -1099,9 +1101,9 @@ export class DiscordApplication implements ConnectomeApplication {
     // Add ResponseHandler to accumulate streams and emit activation:completed
     space.emit({ topic: 'component:add', source: space.getRef(), timestamp: Date.now(), payload: { componentType: 'ResponseHandler', componentId: 'discord:ResponseHandler', config: {} } });
 
-    // Add ActionEffector and ContextTransform
-    space.emit({ topic: 'component:add', source: space.getRef(), timestamp: Date.now(), payload: { componentType: 'ActionEffector', componentId: 'discord:ActionEffector', config: {} } });
-    space.emit({ topic: 'component:add', source: space.getRef(), timestamp: Date.now(), payload: { componentType: 'ContextTransform', componentId: 'discord:ContextTransform', config: {} } });
+    // Add ActionRouter and ContextRenderer
+    space.emit({ topic: 'component:add', source: space.getRef(), timestamp: Date.now(), payload: { componentType: 'ActionRouter', componentId: 'discord:ActionRouter', config: {} } });
+    space.emit({ topic: 'component:add', source: space.getRef(), timestamp: Date.now(), payload: { componentType: 'ContextRenderer', componentId: 'discord:ContextRenderer', config: {} } });
 
     // Add ScriptRunner for Lua scripting support (uses global registry)
     space.emit({
@@ -1199,6 +1201,8 @@ export class DiscordApplication implements ConnectomeApplication {
     registry.register('ComponentManager', ComponentManager);
     registry.register('DiscordReceptor', DiscordReceptor);
     registry.register('DiscordOutbound', DiscordOutbound);
+    registry.register('ActionRouter', ActionRouter);
+    registry.register('ContextRenderer', ContextRenderer);
     // Lua Scripting components (FLEX architecture)
     registry.register('ScriptRunner', ScriptRunner);
     registry.register('ToolCallHandler', ToolCallHandler);
