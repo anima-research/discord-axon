@@ -29,7 +29,7 @@ import {
 
 // Lua Scripting System
 import {
-  ScriptExecutorEffector,
+  ScriptRunner,
   ActionResultProcessor,
   ActivationDecider,
   createToolRegistry,
@@ -627,18 +627,18 @@ class DiscordOutbound extends Component {
  * ToolCallHandler - Executes tool calls from Lua scripts
  *
  * Handles:
- * - Processing tool-call facets created by ScriptExecutorEffector
+ * - Processing tool-call facets created by ScriptRunner
  * - Routing tool calls to appropriate handlers (Discord actions, etc.)
  * - Creating tool-call-result facets to resume blocked scripts
  *
  * Constraints:
  * - Priority 300 (effector)
- * - Must run after ScriptExecutorEffector (which creates tool-call facets)
+ * - Must run after ScriptRunner (which creates tool-call facets)
  */
 class ToolCallHandler extends Component {
   constraints = [
     priorityConstraint(ComponentPriority.EFFECTOR),
-    afterComponentType('ScriptExecutorEffector')
+    afterComponentType('ScriptRunner')
   ];
 
   private discordAfferent?: any;
@@ -1049,7 +1049,7 @@ export class DiscordApplication implements ConnectomeApplication {
     const modulePort = this.config.discord.modulePort || 8080;
 
     // Create tool registry early so we can generate Lua scripting docs
-    // Use global registry so ScriptExecutorEffector can access it
+    // Use global registry so ScriptRunner can access it
     const toolRegistry = createDiscordToolRegistry();
     setGlobalToolRegistry(toolRegistry);
     const luaScriptingPrompt = generateLuaScriptingPrompt(toolRegistry);
@@ -1103,14 +1103,14 @@ export class DiscordApplication implements ConnectomeApplication {
     space.emit({ topic: 'component:add', source: space.getRef(), timestamp: Date.now(), payload: { componentType: 'ActionEffector', componentId: 'discord:ActionEffector', config: {} } });
     space.emit({ topic: 'component:add', source: space.getRef(), timestamp: Date.now(), payload: { componentType: 'ContextTransform', componentId: 'discord:ContextTransform', config: {} } });
 
-    // Add ScriptExecutorEffector for Lua scripting support (uses global registry)
+    // Add ScriptRunner for Lua scripting support (uses global registry)
     space.emit({
       topic: 'component:add',
       source: space.getRef(),
       timestamp: Date.now(),
       payload: {
-        componentType: 'ScriptExecutorEffector',
-        componentId: 'discord:ScriptExecutorEffector',
+        componentType: 'ScriptRunner',
+        componentId: 'discord:ScriptRunner',
         config: {}
       }
     });
@@ -1200,7 +1200,7 @@ export class DiscordApplication implements ConnectomeApplication {
     registry.register('DiscordReceptor', DiscordReceptor);
     registry.register('DiscordOutbound', DiscordOutbound);
     // Lua Scripting components (FLEX architecture)
-    registry.register('ScriptExecutorEffector', ScriptExecutorEffector);
+    registry.register('ScriptRunner', ScriptRunner);
     registry.register('ToolCallHandler', ToolCallHandler);
     registry.register('ActionResultProcessor', ActionResultProcessor);
     registry.register('ActivationDecider', ActivationDecider);
