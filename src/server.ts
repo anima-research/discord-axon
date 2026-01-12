@@ -97,7 +97,7 @@ class CombinedDiscordAxonServer {
       manifest: {
         name: 'DiscordAfferent',
         version: '2.0.0',
-        description: 'Discord WebSocket afferent for RETM architecture',
+        description: 'Discord WebSocket afferent for Connectome',
         componentClass: 'DiscordAfferent',
         moduleType: 'function',
         exports: {
