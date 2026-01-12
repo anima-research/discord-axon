@@ -995,28 +995,6 @@ else
 end
 </action>
 
-### Correlating Multiple Actions with Aliases
-
-When using multiple actions in one response, use the \`alias\` attribute to identify which result belongs to which action:
-
-<action name="lua" alias="setup">
-discord_send("Setting up...")
-return { step = "setup", ready = true }
-</action>
-
-<action name="lua" alias="process">
-local data = json.encode({ items = 5 })
-return { step = "process", data = data }
-</action>
-
-Results will include the alias for easy correlation:
-\`\`\`
-<action_result alias="setup" success="true">{"step": "setup", "ready": true}</action_result>
-<action_result alias="process" success="true">{"step": "process", "data": "..."}</action_result>
-\`\`\`
-
-This is especially useful when actions may complete in different order than written.
-
 ### Notes
 - Tool calls use positional arguments, not tables (e.g., \`discord_send("message")\` not \`discord_send({ message = "..." })\`)
 - Tool calls block until complete, then return their result
