@@ -21,8 +21,13 @@ import {
   ComponentRegistry,
   // Agent
   AgentComponent,
+  ResponseHandler,
   // Components
   AxonLoaderComponent,
+  // Widgets
+  TextEditorControlPanel,
+  ControlPanelActionsListener,
+  PanelScopeReceptor,
   // Helpers
   updateStateFacets,
   // Constraints
@@ -1098,6 +1103,18 @@ export class DiscordApplication implements ConnectomeApplication {
       }
     });
 
+    // Add ResponseHandler to accumulate streaming chunks and emit activation:completed
+    space.emit({
+      topic: 'component:add',
+      source: space.getRef(),
+      timestamp: Date.now(),
+      payload: {
+        componentType: 'ResponseHandler',
+        componentId: 'discord:ResponseHandler',
+        config: {}
+      }
+    });
+
     // Add LuaScriptingPromptEmitter as backup (primary method is via agentSystemPrompts above)
     space.emit({
       topic: 'component:add',
@@ -1136,6 +1153,23 @@ export class DiscordApplication implements ConnectomeApplication {
     space.addComponent(factoryLoader, 'axon-loader:component-factory');
     await factoryLoader.connect(`axon://localhost:${modulePort}/modules/component-factory/manifest`);
 
+    // Add Control Panel infrastructure receptors
+    // These handle panel:tools-registered and panel:scope-change events
+    // to create action-definition facets and manage tool visibility
+    space.addComponent(new ControlPanelActionsListener(), 'infrastructure:ControlPanelActionsListener');
+    space.addComponent(new PanelScopeReceptor(), 'infrastructure:PanelScopeReceptor');
+    console.log('🎛️ Control Panel infrastructure added');
+
+    // Add Text Editor Control Panel (built-in widget)
+    // Provides file viewing/editing capabilities matching Anthropic's text editor tool
+    const textEditorPanel = new TextEditorControlPanel({
+      workingDirectory: process.cwd(),
+      maxViewCharacters: 50000,
+      maxBackupsPerFile: 5
+    });
+    space.addComponent(textEditorPanel, 'text-editor:TextEditorControlPanel');
+    console.log('📝 Text Editor Control Panel added');
+
     console.log('✅ Discord application initialized');
   }
 
@@ -1150,7 +1184,10 @@ export class DiscordApplication implements ConnectomeApplication {
     registry.register('ToolCallHandler', ToolCallHandler);
     registry.register('ActionResultProcessor', ActionResultProcessor);
     registry.register('ActivationDecider', ActivationDecider);
+    registry.register('ResponseHandler', ResponseHandler);
     registry.register('LuaScriptingPromptEmitter', LuaScriptingPromptEmitter);
+    // Built-in widgets
+    registry.register('TextEditorControlPanel', TextEditorControlPanel);
     return registry;
   }
 
