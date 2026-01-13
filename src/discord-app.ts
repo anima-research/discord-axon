@@ -8,38 +8,56 @@
  * - DiscordOutbound: All outbound Discord actions (after AgentComponent)
  */
 
-import { ConnectomeApplication } from 'connectome-ts/src/host/types';
-import { Space } from 'connectome-ts/src/spaces/space';
-import { VEILStateManager } from 'connectome-ts/src/veil/veil-state';
-import { ComponentRegistry } from 'connectome-ts/src/persistence/component-registry';
-import { AgentComponent } from 'connectome-ts/src/agent/agent-component';
-import { ResponseHandler } from 'connectome-ts/src/agent/response-handler';
-import { Component } from 'connectome-ts/src/spaces/component';
-import { SpaceEvent, ExecutionContext } from 'connectome-ts/src/spaces/types';
-import { ComponentManager } from 'connectome-ts/src/spaces/component-manager';
-import { ActionRouter } from 'connectome-ts/src/spaces/action-effector';
-import { ContextRenderer } from 'connectome-ts/src/hud/context-transform';
-import { AxonLoaderComponent } from 'connectome-ts/src/components/axon-loader';
-import type { Facet, ReadonlyVEILState } from 'connectome-ts/src';
-import { updateStateFacets } from 'connectome-ts/src/helpers/factories';
 import {
+  // Host types
+  ConnectomeHost,
+  // Spaces
+  Space,
+  SpaceComponent as Component,
+  ComponentManager,
+  // VEIL
+  VEILStateManager,
+  // Persistence
+  ComponentRegistry,
+  // Agent
+  AgentComponent,
+  ResponseHandler,
+  // Components
+  AxonLoaderComponent,
+  // Widgets
+  TextEditorControlPanel,
+  ControlPanelActionsListener,
+  PanelScopeReceptor,
+  // Helpers
+  updateStateFacets,
+  // Constraints
   priorityConstraint,
   ComponentPriority,
   afterComponentType,
-  beforeComponentType
-} from 'connectome-ts/src/spaces/constraints';
-
-// Lua Scripting System
-import {
+  beforeComponentType,
+  // Scripting
   ScriptRunner,
   ActionResultProcessor,
   ActivationDecider,
   createToolRegistry,
-  ToolRegistry,
   setGlobalToolRegistry,
+  getGlobalToolRegistry,
   isToolCallFacet,
   createToolCallResultFacet,
-} from 'connectome-ts/src/scripting';
+  // Tool Mode Control
+  ToolModeResolver,
+  ToolModeHandler,
+  setToolModeToolDefinition,
+  resolveToolMode,
+  ToolInvocationMode,
+  // Types
+  SpaceEvent,
+} from 'connectome-ts';
+
+import type { ConnectomeApplication } from 'connectome-ts';
+import type { Facet, ReadonlyVEILState } from 'connectome-ts';
+import type { ToolRegistry } from 'connectome-ts';
+import type { ExecutionContext } from 'connectome-ts/dist/spaces/types';
 
 export interface DiscordAppConfig {
   agentName: string;
@@ -885,59 +903,181 @@ function createDiscordToolRegistry(): ToolRegistry {
     ]
   });
 
+  // Tool Mode Control - allows agent to switch between native and programmatic tool execution
+  registry.register({
+    name: 'setToolMode',
+    description: 'Set the execution mode for a tool. Use "native" for immediate execution with feedback, or "programmatic" for batched execution in Lua scripts.',
+    parameters: [
+      { name: 'toolName', type: 'string', description: 'Name of the tool to configure, or "*" for all tools', required: true },
+      { name: 'mode', type: 'string', description: 'Invocation mode: "native" (immediate, each call triggers re-activation) or "programmatic" (batched, only final result triggers re-activation)', required: true },
+      { name: 'priority', type: 'number', description: 'Priority for this preference (higher wins in conflicts). Default: 75', required: false },
+      { name: 'duration', type: 'number', description: 'Optional duration in milliseconds. If set, preference expires after this time.', required: false }
+    ],
+    defaultInvocationMode: 'native', // This tool should always be native
+    allowModeOverride: false // Cannot change mode of setToolMode itself
+  });
+
   return registry;
 }
 
 /**
  * LuaScriptingPromptEmitter - Emits Lua scripting documentation as ambient facet
  *
- * This component runs once on mount to inject the Lua scripting system prompt
- * into the agent's context, so the agent knows about the `lua` action and available tools.
+ * This component dynamically generates tool lists based on current mode preferences.
+ * It subscribes to tool-mode:changed events to refresh the prompt when modes change.
  *
  * Constraints:
  * - Priority 0 (modulator - runs early to set up context)
  */
 class LuaScriptingPromptEmitter extends Component {
   constraints = [priorityConstraint(0)];  // Modulator priority
+  topics = ['tool-mode:changed'];  // Subscribe to mode change events
 
-  // Pre-generated prompt content (passed via config as plain string)
-  public promptContent?: string;
-  private emitted = false;
+  private facetId = 'system-prompt:lua-scripting';
+  private initialized = false;
+
+  // Get tool registry from global (can't pass via config as methods are lost during serialization)
+  private getToolRegistry(): ToolRegistry | undefined {
+    return getGlobalToolRegistry();
+  }
 
   execute(context: ExecutionContext): void {
-    // Only emit once
-    if (this.emitted) return;
-    this.emitted = true;
+    const { event, state } = context;
 
-    if (!this.promptContent) {
-      console.warn('[LuaScriptingPromptEmitter] No prompt content configured');
+    // Initial emission on first execute
+    if (!this.initialized) {
+      this.initialized = true;
+      this.emitToolPrompt(state);
       return;
     }
 
-    console.log('[LuaScriptingPromptEmitter] Emitting Lua scripting system prompt');
-
-    this.addOperation({
-      type: 'addFacet',
-      facet: {
-        id: 'system-prompt:lua-scripting',
-        type: 'ambient',
-        content: this.promptContent
+    // Refresh on tool-mode:changed event
+    if (event?.topic === 'tool-mode:changed') {
+      const payload = event.payload as { toolName?: string; mode?: string; setBy?: string } || {};
+      const { toolName, mode, setBy } = payload;
+      console.log(`[LuaScriptingPromptEmitter] Tool mode changed: ${toolName} → ${mode} (by ${setBy})`);
+      if (toolName && mode) {
+        this.emitToolPrompt(state, { toolName, mode });
+      } else {
+        this.emitToolPrompt(state);  // Refresh without specific change info
       }
+    }
+  }
+
+  private emitToolPrompt(state: ReadonlyVEILState, modeChange?: { toolName: string; mode: string }): void {
+    const toolRegistry = this.getToolRegistry();
+    if (!toolRegistry) {
+      console.warn('[LuaScriptingPromptEmitter] No tool registry available');
+      return;
+    }
+
+    // Get all tools and resolve their current modes
+    const tools = toolRegistry.getTools();
+    const toolsWithModes = tools.map(tool => {
+      const resolution = resolveToolMode(tool.name, state, toolRegistry);
+      return {
+        ...tool,
+        currentMode: resolution.mode,
+        modeSource: resolution.source
+      };
     });
+
+    // Split tools by mode
+    const nativeTools = toolsWithModes.filter(t => t.currentMode === 'native');
+    const programmaticTools = toolsWithModes.filter(t => t.currentMode === 'programmatic');
+
+    // Generate the prompt
+    const promptContent = generateLuaScriptingPromptWithModes(nativeTools, programmaticTools);
+
+    // Check if facet already exists
+    const existingFacet = state.facets.get(this.facetId);
+
+    if (existingFacet) {
+      // Update existing facet
+      console.log('[LuaScriptingPromptEmitter] Updating tool prompt (mode change)');
+      this.addOperation({
+        type: 'rewriteFacet',
+        id: this.facetId,
+        changes: { content: promptContent }
+      });
+    } else {
+      // Create new facet
+      console.log('[LuaScriptingPromptEmitter] Emitting initial tool prompt');
+      this.addOperation({
+        type: 'addFacet',
+        facet: {
+          id: this.facetId,
+          type: 'ambient',
+          content: promptContent
+        }
+      });
+    }
+
+    // If this was triggered by a mode change, also emit a notification
+    if (modeChange) {
+      const modeLabel = modeChange.mode === 'programmatic' ? 'Lua scripting only' : 'native calls';
+      this.addOperation({
+        type: 'addFacet',
+        facet: {
+          id: `tool-mode-notification:${Date.now()}`,
+          type: 'ambient',
+          ephemeral: true,
+          content: `[Tool mode changed: "${modeChange.toolName}" is now available for ${modeLabel}]`
+        }
+      });
+    }
   }
 }
 
 /**
- * Generate system prompt describing Lua scripting capability
+ * Tool with resolved mode information
  */
-function generateLuaScriptingPrompt(registry: ToolRegistry): string {
-  const toolDocs = registry.getTools().map(tool => {
-    const params = tool.parameters.map(p => {
-      const req = p.required ? '' : '?';
-      return `${p.name}${req}: ${p.type}`;
-    }).join(', ');
-    return `  ${tool.name}(${params}) - ${tool.description}`;
-  }).join('\n');
+interface ToolWithMode {
+  name: string;
+  description: string;
+  parameters: Array<{ name: string; type: string; required?: boolean; description?: string }>;
+  currentMode: ToolInvocationMode;
+  modeSource: string;
+}
+
+/**
+ * Format a tool for display in the prompt
+ */
+function formatToolDoc(tool: ToolWithMode): string {
+  const params = tool.parameters.map(p => {
+    const req = p.required !== false ? '' : '?';
+    return `${p.name}${req}: ${p.type}`;
+  }).join(', ');
+  return `  ${tool.name}(${params}) - ${tool.description}`;
+}
+
+/**
+ * Generate system prompt with tools split by mode
+ */
+function generateLuaScriptingPromptWithModes(
+  nativeTools: ToolWithMode[],
+  programmaticTools: ToolWithMode[]
+): string {
+  const nativeToolDocs = nativeTools.map(formatToolDoc).join('\n');
+  const programmaticToolDocs = programmaticTools.map(formatToolDoc).join('\n');
+
+  let toolsSection = '';
+
+  // Native tools section (available for both direct calls and Lua)
+  if (nativeTools.length > 0) {
+    toolsSection += `**Native Tools** (available for direct <action> calls AND Lua scripts):
+${nativeToolDocs}
+
+`;
+  }
+
+  // Programmatic tools section (Lua only)
+  if (programmaticTools.length > 0) {
+    toolsSection += `**Scripting-Only Tools** (available ONLY inside Lua scripts):
+${programmaticToolDocs}
+
+`;
+  }
 
   return `## Lua Scripting
 
@@ -946,12 +1086,13 @@ This is useful when you need to perform several related actions without waiting 
 
 ### Usage
 
-Use the "lua" action with Lua code in the content. Use \`return\` to get results back:
+Use the "lua" action with Lua code in the content. Use \`return\` to get results back.
+Note: Use the \`cnctm:\` namespace prefix for action tags (similar to Anthropic's \`antml:\` prefix):
 
-<action name="lua">
+<cnctm:action name="lua">
 local result = discord_send("Hello!")
 return result
-</action>
+</cnctm:action>
 
 ### Available Functions
 
@@ -960,40 +1101,39 @@ return result
   json.encode(value) - Convert value to JSON string
   json.decode(str) - Parse JSON string to value
 
-**Discord Tools:**
-${toolDocs}
+${toolsSection.trim()}
 
 ### Examples
 
 Send a message to the current channel:
-<action name="lua">
+<cnctm:action name="lua">
 local result = discord_send("Hello from Lua!")
 return result
-</action>
+</cnctm:action>
 
 Send to a specific channel:
-<action name="lua">
+<cnctm:action name="lua">
 local result = discord_send("1234567890", "Hello to specific channel!")
 return result
-</action>
+</cnctm:action>
 
 Chain multiple actions:
-<action name="lua">
+<cnctm:action name="lua">
 discord_typing()
 local msg1 = discord_send("First message")
 local msg2 = discord_send("Second message")
 return { first = msg1, second = msg2 }
-</action>
+</cnctm:action>
 
 Conditional logic:
-<action name="lua">
+<cnctm:action name="lua">
 local result = discord_send("Testing...")
 if result and result.sent then
   return discord_send("It worked!")
 else
   return { error = "Failed to send" }
 end
-</action>
+</cnctm:action>
 
 ### Notes
 - Tool calls use positional arguments, not tables (e.g., \`discord_send("message")\` not \`discord_send({ message = "..." })\`)
@@ -1001,7 +1141,28 @@ end
 - Use \`return\` to pass results back from the script
 - Errors in scripts will be reported back to you
 - When replying to a Discord message, \`discord_send("message")\` uses that channel automatically
-- If no channel context exists (e.g., activated via control panel), you must specify: \`discord_send(channelId, "message")\``;
+- If no channel context exists (e.g., activated via control panel), you must specify: \`discord_send(channelId, "message")\`
+- Use \`setToolMode(toolName, mode)\` to switch tools between "native" and "programmatic" modes`;
+}
+
+/**
+ * Generate static system prompt (for initial load, before any mode changes)
+ * This is used for agentSystemPrompts which are set at startup.
+ */
+function generateLuaScriptingPrompt(registry: ToolRegistry): string {
+  // At startup, all tools are in their default mode (native)
+  const tools = registry.getTools();
+  const allToolsAsNative: ToolWithMode[] = tools.map(tool => ({
+    ...tool,
+    currentMode: tool.defaultInvocationMode || 'native' as ToolInvocationMode,
+    modeSource: 'tool-default'
+  }));
+  
+  // Split by default mode
+  const nativeTools = allToolsAsNative.filter(t => t.currentMode === 'native');
+  const programmaticTools = allToolsAsNative.filter(t => t.currentMode === 'programmatic');
+  
+  return generateLuaScriptingPromptWithModes(nativeTools, programmaticTools);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1076,9 +1237,6 @@ export class DiscordApplication implements ConnectomeApplication {
       }
     });
 
-    // Add ResponseHandler to accumulate streams and emit activation:completed
-    space.emit({ topic: 'component:add', source: space.getRef(), timestamp: Date.now(), payload: { componentType: 'ResponseHandler', componentId: 'discord:ResponseHandler', config: {} } });
-
     // Add ActionRouter and ContextRenderer
     space.emit({ topic: 'component:add', source: space.getRef(), timestamp: Date.now(), payload: { componentType: 'ActionRouter', componentId: 'discord:ActionRouter', config: {} } });
     space.emit({ topic: 'component:add', source: space.getRef(), timestamp: Date.now(), payload: { componentType: 'ContextRenderer', componentId: 'discord:ContextRenderer', config: {} } });
@@ -1107,6 +1265,29 @@ export class DiscordApplication implements ConnectomeApplication {
       }
     });
 
+    // Add Tool Mode Control components
+    space.emit({
+      topic: 'component:add',
+      source: space.getRef(),
+      timestamp: Date.now(),
+      payload: {
+        componentType: 'ToolModeResolver',
+        componentId: 'discord:ToolModeResolver',
+        config: {}
+      }
+    });
+
+    space.emit({
+      topic: 'component:add',
+      source: space.getRef(),
+      timestamp: Date.now(),
+      payload: {
+        componentType: 'ToolModeHandler',
+        componentId: 'discord:ToolModeHandler',
+        config: {}
+      }
+    });
+
     // Add ActionResultProcessor to emit activation:create events from action-results
     space.emit({
       topic: 'component:add',
@@ -1131,7 +1312,21 @@ export class DiscordApplication implements ConnectomeApplication {
       }
     });
 
-    // Add LuaScriptingPromptEmitter as backup (primary method is via agentSystemPrompts above)
+    // Add ResponseHandler to accumulate streaming chunks and emit activation:completed
+    space.emit({
+      topic: 'component:add',
+      source: space.getRef(),
+      timestamp: Date.now(),
+      payload: {
+        componentType: 'ResponseHandler',
+        componentId: 'discord:ResponseHandler',
+        config: {}
+      }
+    });
+
+    // Add LuaScriptingPromptEmitter for dynamic tool mode updates
+    // This component regenerates the tool list when modes change
+    // It uses the global tool registry (can't pass via config as methods are lost)
     space.emit({
       topic: 'component:add',
       source: space.getRef(),
@@ -1139,7 +1334,7 @@ export class DiscordApplication implements ConnectomeApplication {
       payload: {
         componentType: 'LuaScriptingPromptEmitter',
         componentId: 'discord:LuaScriptingPromptEmitter',
-        config: { promptContent: luaScriptingPrompt }
+        config: {}
       }
     });
 
@@ -1169,6 +1364,23 @@ export class DiscordApplication implements ConnectomeApplication {
     space.addComponent(factoryLoader, 'axon-loader:component-factory');
     await factoryLoader.connect(`axon://localhost:${modulePort}/modules/component-factory/manifest`);
 
+    // Add Control Panel infrastructure receptors
+    // These handle panel:tools-registered and panel:scope-change events
+    // to create action-definition facets and manage tool visibility
+    space.addComponent(new ControlPanelActionsListener(), 'infrastructure:ControlPanelActionsListener');
+    space.addComponent(new PanelScopeReceptor(), 'infrastructure:PanelScopeReceptor');
+    console.log('🎛️ Control Panel infrastructure added');
+
+    // Add Text Editor Control Panel (built-in widget)
+    // Provides file viewing/editing capabilities matching Anthropic's text editor tool
+    const textEditorPanel = new TextEditorControlPanel({
+      workingDirectory: process.cwd(),
+      maxViewCharacters: 50000,
+      maxBackupsPerFile: 5
+    });
+    space.addComponent(textEditorPanel, 'text-editor:TextEditorControlPanel');
+    console.log('📝 Text Editor Control Panel added');
+
     console.log('✅ Discord application initialized');
   }
 
@@ -1185,8 +1397,14 @@ export class DiscordApplication implements ConnectomeApplication {
     registry.register('ScriptRunner', ScriptRunner);
     registry.register('ToolCallHandler', ToolCallHandler);
     registry.register('ActionResultProcessor', ActionResultProcessor);
+    // Tool Mode Control components
+    registry.register('ToolModeResolver', ToolModeResolver);
+    registry.register('ToolModeHandler', ToolModeHandler);
     registry.register('ActivationDecider', ActivationDecider);
+    registry.register('ResponseHandler', ResponseHandler);
     registry.register('LuaScriptingPromptEmitter', LuaScriptingPromptEmitter);
+    // Built-in widgets
+    registry.register('TextEditorControlPanel', TextEditorControlPanel);
     return registry;
   }
 
