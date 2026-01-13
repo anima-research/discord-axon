@@ -1138,6 +1138,33 @@ else
 end
 </cnctm:action>
 
+### Sessions (Persistent State)
+
+Use the \`session\` parameter to maintain state across multiple script invocations:
+
+<cnctm:action name="lua" session="mySession">
+-- First call: set up state (use GLOBALS, not locals!)
+counter = 0
+data = {}
+return "Session initialized"
+</cnctm:action>
+
+<cnctm:action name="lua" session="mySession">
+-- Later call: state persists
+counter = counter + 1
+table.insert(data, "item " .. counter)
+return { counter = counter, data = data }
+</cnctm:action>
+
+**Important:** Only **global variables** persist between calls.
+- Use globals: \`myVar = value\` (persists)
+- NOT locals: \`local myVar = value\` (lost after script ends)
+
+Session management actions:
+- \`session:list\` - List active sessions
+- \`session:inspect\` with \`name\` parameter - View session globals
+- \`session:close\` with \`name\` parameter - Close a session
+
 ### Notes
 - Tool calls use positional arguments, not tables (e.g., \`discord_send("message")\` not \`discord_send({ message = "..." })\`)
 - Tool calls block until complete, then return their result
